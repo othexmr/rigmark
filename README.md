@@ -158,6 +158,13 @@ it only with receipts carrying the identical request body.
 For an engine without vLLM's `/tokenize` extension or token-ID completion
 input, add `--skip-prefill`. To omit load testing, add `--skip-concurrency`.
 
+To measure requests that arrive while others are already running (a long prompt
+landing in a busy decode batch, or short requests queued behind a long prefill),
+add `--staggered 2,4`. See the staggered-arrivals section of
+[PROTOCOL.md](PROTOCOL.md) for the two directions, the validity rule and the
+`--staggered-*` options. It needs the same `/tokenize` support as the prefill
+suite.
+
 ## Compare two results
 
 ```bash

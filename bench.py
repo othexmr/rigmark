@@ -20,7 +20,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 PROTOCOL_VERSION = "1.1.0"
@@ -115,7 +115,22 @@ class Client:
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             return json.load(response)
 
-    def stream(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def stream(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        record_events: bool = False,
+        on_first_output: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Open one streaming request and time it.
+
+        ``record_events`` additionally keeps the arrival time of every
+        measurable SSE event (relative to the request start) together with the
+        absolute monotonic start/first-output/finish instants, which the
+        staggered-arrival suite needs to relate streams to each other.
+        ``on_first_output`` is called once, when the first measurable output
+        arrives; it must not raise.
+        """
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(payload).encode(),
@@ -130,6 +145,7 @@ class Client:
         measured_chunks: list[str] = []
         output_chunks: list[str] = []
         reasoning_chunks: list[str] = []
+        event_seconds: list[float] = []
         stream_done_marker = False
 
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -172,10 +188,15 @@ class Client:
                 measured = reasoning + content
                 if measured:
                     now = time.monotonic()
-                    first = first or now
+                    if first is None:
+                        first = now
+                        if on_first_output is not None:
+                            on_first_output()
                     if content:
                         first_visible = first_visible or now
                     last = now
+                    if record_events:
+                        event_seconds.append(round(now - started, 6))
                     measured_chunks.append(measured)
                     reasoning_chunks.append(reasoning)
                     output_chunks.append(content)
@@ -204,7 +225,16 @@ class Client:
         rendered = "".join(measured_chunks)
         output = "".join(output_chunks)
         reasoning = "".join(reasoning_chunks)
+        timeline: dict[str, Any] = {}
+        if record_events:
+            timeline = {
+                "started_monotonic_seconds": round(started, 6),
+                "first_output_monotonic_seconds": round(first, 6),
+                "finished_monotonic_seconds": round(finished, 6),
+                "event_seconds": event_seconds,
+            }
         return {
+            **timeline,
             "prompt_tokens": prompt,
             "completion_tokens": completion,
             "ttft_seconds": round(first - started, 6),
@@ -658,6 +688,393 @@ def run_concurrency(
     return output
 
 
+def completion_payload(
+    model: str, tokens: list[int], max_tokens: int, seed: int
+) -> dict[str, Any]:
+    """Exact-token completion request used for the long staggered request."""
+    return {
+        "model": model,
+        "prompt": tokens,
+        "add_special_tokens": False,
+        "max_tokens": max_tokens,
+        "ignore_eos": True,
+        "temperature": 0.0,
+        "seed": seed,
+        "stream": True,
+        "stream_options": {
+            "include_usage": True,
+        },
+    }
+
+
+def delivery_gaps(row: dict[str, Any]) -> tuple[list[float], list[float]]:
+    """Absolute event instants and the intervals between consecutive events."""
+    started = row["started_monotonic_seconds"]
+    instants = [started + offset for offset in row["event_seconds"]]
+    return instants, [b - a for a, b in zip(instants, instants[1:])]
+
+
+def stall_analysis(
+    row: dict[str, Any], window_start: float, window_end: float
+) -> dict[str, Any]:
+    """Delivery stalls of one recorded stream around another request.
+
+    The whole-stream p95/max intervals describe how smoothly the stream was
+    delivered overall.  The arrival-window figures only consider intervals that
+    end inside ``[window_start, window_end]`` (the other request's start and
+    first output), which is where a scheduler pauses incumbents to admit a
+    prefill.  ``spanning_gap_seconds`` is the single interval during which the
+    other request started, or ``None`` when this stream had already finished.
+    """
+    instants, gaps = delivery_gaps(row)
+    spanning = None
+    window = []
+    for start, end, gap in zip(instants, instants[1:], gaps):
+        if start <= window_start < end:
+            spanning = gap
+        if window_start <= end <= window_end:
+            window.append(gap)
+    return {
+        "events": len(instants),
+        "median_gap_seconds": round(statistics.median(gaps), 6) if gaps else 0.0,
+        "p95_gap_seconds": round(percentile(gaps, 0.95), 6) if gaps else 0.0,
+        "max_gap_seconds": round(max(gaps), 6) if gaps else 0.0,
+        "spanning_gap_seconds": None if spanning is None else round(spanning, 6),
+        "arrival_window_gaps": len(window),
+        "arrival_window_p95_gap_seconds": (
+            round(percentile(window, 0.95), 6) if window else None
+        ),
+        "arrival_window_max_gap_seconds": (
+            round(max(window), 6) if window else None
+        ),
+    }
+
+
+def wait_for_events(
+    events: list[threading.Event],
+    futures: list[Any],
+    timeout: float,
+) -> None:
+    """Block until every event is set; fail fast if a producer already failed."""
+    deadline = time.monotonic() + timeout
+    for event in events:
+        while not event.wait(0.25):
+            for future in futures:
+                if future.done() and future.exception() is not None:
+                    raise RuntimeError(
+                        "an incumbent stream failed before its first output: "
+                        f"{future.exception()}"
+                    )
+            if time.monotonic() > deadline:
+                raise TimeoutError("incumbent streams produced no output in time")
+
+
+def staggered_decode_first_round(
+    client: Client,
+    model: str,
+    prompts: dict[str, Any],
+    level: int,
+    round_index: int,
+    settings: dict[str, Any],
+    seed: int,
+    extra_body: dict[str, Any],
+    comparison_id: str,
+) -> dict[str, Any]:
+    """C-1 short incumbents decode; one long-context request arrives."""
+    incumbents = level - 1
+    workload = settings["staggered_workload"]
+    prompt = prompts["workloads"][workload]
+    depth = settings["staggered_depth"]
+    delay = settings["staggered_delay_seconds"]
+    solo_tokens = exact_token_ids(
+        client, model, depth, prompts["prefill_unit"],
+        nonce(comparison_id, "staggered", "decode-first", "solo", level, round_index),
+    )
+    mixed_tokens = exact_token_ids(
+        client, model, depth, prompts["prefill_unit"],
+        nonce(comparison_id, "staggered", "decode-first", "arrival", level, round_index),
+    )
+    solo = client.stream(
+        "/v1/completions",
+        completion_payload(model, solo_tokens, settings["staggered_arrival_tokens"], seed),
+        record_events=True,
+    )
+    if solo["prompt_tokens"] != depth:
+        raise RuntimeError("staggered solo prompt token count does not match depth")
+
+    first_events = [threading.Event() for _ in range(incumbents)]
+    barrier = threading.Barrier(incumbents)
+    arrival_box: dict[str, Any] = {}
+
+    def incumbent(index: int) -> dict[str, Any]:
+        request_nonce = nonce(
+            comparison_id, "staggered", "decode-first", "incumbent",
+            level, round_index, index + 1,
+        )
+        payload = build_chat_payload(
+            model, prompts["system"], f"Request nonce: {request_nonce}\n\n{prompt}",
+            settings["staggered_incumbent_tokens"], seed + index, extra_body,
+        )
+        barrier.wait()
+        row = client.stream(
+            "/v1/chat/completions", payload,
+            record_events=True, on_first_output=first_events[index].set,
+        )
+        row["stream"] = index + 1
+        return row
+
+    with ThreadPoolExecutor(max_workers=incumbents) as executor:
+        futures = [executor.submit(incumbent, index) for index in range(incumbents)]
+        wait_for_events(first_events, futures, client.timeout)
+        time.sleep(delay)
+        arrival_box["started"] = time.monotonic()
+        newcomer = client.stream(
+            "/v1/completions",
+            completion_payload(model, mixed_tokens, settings["staggered_arrival_tokens"], seed),
+            record_events=True,
+        )
+        incumbent_rows = [future.result() for future in futures]
+
+    if newcomer["prompt_tokens"] != depth:
+        raise RuntimeError("staggered newcomer prompt token count does not match depth")
+    arrival = newcomer["started_monotonic_seconds"]
+    newcomer_first = newcomer["first_output_monotonic_seconds"]
+    last_first_output = max(row["first_output_monotonic_seconds"] for row in incumbent_rows)
+    overlap_valid = all(row["finished_monotonic_seconds"] > arrival for row in incumbent_rows)
+    stalls = [stall_analysis(row, arrival, newcomer_first) for row in incumbent_rows]
+    for row, stall in zip(incumbent_rows, stalls):
+        row["stall"] = stall
+    window_gaps = [
+        stall["arrival_window_max_gap_seconds"]
+        for stall in stalls
+        if stall["arrival_window_max_gap_seconds"] is not None
+    ]
+    return {
+        "round": round_index,
+        "overlap_valid": overlap_valid,
+        "arrival_after_last_incumbent_first_output_seconds": round(arrival - last_first_output, 6),
+        "incumbents_finished_before_newcomer_first_output": sum(
+            row["finished_monotonic_seconds"] <= newcomer_first for row in incumbent_rows
+        ),
+        "newcomer_ttft_seconds": newcomer["ttft_seconds"],
+        "newcomer_solo_ttft_seconds": solo["ttft_seconds"],
+        "newcomer_ttft_ratio_vs_solo": round(
+            newcomer["ttft_seconds"] / max(solo["ttft_seconds"], 1e-9), 3
+        ),
+        "newcomer_decode_tokens_per_second": newcomer["decode_tokens_per_second"],
+        "newcomer_wall_seconds": newcomer["wall_seconds"],
+        "incumbent_max_p95_gap_seconds": max(stall["p95_gap_seconds"] for stall in stalls),
+        "incumbent_max_arrival_window_gap_seconds": (
+            max(window_gaps) if window_gaps else None
+        ),
+        "incumbent_median_decode_tokens_per_second": round(
+            statistics.median(row["decode_tokens_per_second"] for row in incumbent_rows), 3
+        ),
+        "solo": solo,
+        "newcomer": newcomer,
+        "incumbents": incumbent_rows,
+    }
+
+
+def staggered_prefill_first_round(
+    client: Client,
+    model: str,
+    prompts: dict[str, Any],
+    level: int,
+    round_index: int,
+    settings: dict[str, Any],
+    seed: int,
+    extra_body: dict[str, Any],
+    comparison_id: str,
+    long_solo_ttft: float,
+) -> dict[str, Any]:
+    """One long-context request is prefilling; C-1 short requests arrive."""
+    newcomers = level - 1
+    workload = settings["staggered_workload"]
+    prompt = prompts["workloads"][workload]
+    depth = settings["staggered_depth"]
+    delay = settings["staggered_delay_seconds"]
+    long_tokens = exact_token_ids(
+        client, model, depth, prompts["prefill_unit"],
+        nonce(comparison_id, "staggered", "prefill-first", "incumbent", level, round_index),
+    )
+    solo_nonce = nonce(comparison_id, "staggered", "prefill-first", "solo", level, round_index)
+    solo = client.stream(
+        "/v1/chat/completions",
+        build_chat_payload(
+            model, prompts["system"], f"Request nonce: {solo_nonce}\n\n{prompt}",
+            settings["staggered_arrival_tokens"], seed, extra_body,
+        ),
+        record_events=True,
+    )
+
+    first_event = threading.Event()
+
+    def incumbent() -> dict[str, Any]:
+        return client.stream(
+            "/v1/completions",
+            completion_payload(model, long_tokens, settings["staggered_incumbent_tokens"], seed),
+            record_events=True, on_first_output=first_event.set,
+        )
+
+    def newcomer(index: int) -> dict[str, Any]:
+        request_nonce = nonce(
+            comparison_id, "staggered", "prefill-first", "arrival",
+            level, round_index, index + 1,
+        )
+        payload = build_chat_payload(
+            model, prompts["system"], f"Request nonce: {request_nonce}\n\n{prompt}",
+            settings["staggered_arrival_tokens"], seed + index, extra_body,
+        )
+        barrier.wait()
+        row = client.stream("/v1/chat/completions", payload, record_events=True)
+        row["stream"] = index + 1
+        return row
+
+    barrier = threading.Barrier(newcomers)
+    with ThreadPoolExecutor(max_workers=level) as executor:
+        long_future = executor.submit(incumbent)
+        time.sleep(delay)
+        arrived_during_prefill = not first_event.is_set() and not long_future.done()
+        newcomer_rows: list[dict[str, Any]] = []
+        if arrived_during_prefill:
+            futures = [executor.submit(newcomer, index) for index in range(newcomers)]
+            newcomer_rows = [future.result() for future in futures]
+        long_row = long_future.result()
+
+    if long_row["prompt_tokens"] != depth:
+        raise RuntimeError("staggered long prompt token count does not match depth")
+    long_first = long_row["first_output_monotonic_seconds"]
+    overlap_valid = bool(newcomer_rows) and all(
+        row["started_monotonic_seconds"] < long_first for row in newcomer_rows
+    )
+    result: dict[str, Any] = {
+        "round": round_index,
+        "overlap_valid": overlap_valid,
+        "newcomers_started_during_prefill": sum(
+            row["started_monotonic_seconds"] < long_first for row in newcomer_rows
+        ),
+        "long_ttft_seconds": long_row["ttft_seconds"],
+        "long_solo_ttft_seconds": round(long_solo_ttft, 6),
+        "long_ttft_ratio_vs_solo": round(
+            long_row["ttft_seconds"] / max(long_solo_ttft, 1e-9), 3
+        ),
+        "short_solo_ttft_seconds": solo["ttft_seconds"],
+        "solo": solo,
+        "incumbent": long_row,
+        "newcomers": newcomer_rows,
+    }
+    if newcomer_rows:
+        ttfts = [row["ttft_seconds"] for row in newcomer_rows]
+        median_ttft = statistics.median(ttfts)
+        result.update({
+            "newcomer_median_ttft_seconds": round(median_ttft, 6),
+            "newcomer_max_ttft_seconds": round(max(ttfts), 6),
+            "newcomer_ttft_ratio_vs_solo": round(
+                median_ttft / max(solo["ttft_seconds"], 1e-9), 3
+            ),
+            "newcomer_median_decode_tokens_per_second": round(
+                statistics.median(row["decode_tokens_per_second"] for row in newcomer_rows), 3
+            ),
+        })
+    return result
+
+
+DECODE_FIRST_KEYS = (
+    "newcomer_ttft_seconds",
+    "newcomer_ttft_ratio_vs_solo",
+    "newcomer_decode_tokens_per_second",
+    "incumbent_max_arrival_window_gap_seconds",
+    "incumbent_max_p95_gap_seconds",
+    "incumbent_median_decode_tokens_per_second",
+)
+PREFILL_FIRST_KEYS = (
+    "newcomer_median_ttft_seconds",
+    "newcomer_max_ttft_seconds",
+    "newcomer_ttft_ratio_vs_solo",
+    "long_ttft_seconds",
+    "long_ttft_ratio_vs_solo",
+)
+
+
+def summarise_valid_rounds(
+    rounds: list[dict[str, Any]], keys: tuple[str, ...]
+) -> dict[str, Any]:
+    valid = [row for row in rounds if row["overlap_valid"]]
+    summary: dict[str, Any] = {
+        "rounds": rounds,
+        "valid_rounds": len(valid),
+        "total_rounds": len(rounds),
+    }
+    for key in keys:
+        present = [row for row in valid if row.get(key) is not None]
+        summary[key] = summarise(present, key) if present else None
+    return summary
+
+
+def run_staggered(
+    client: Client,
+    model: str,
+    prompts: dict[str, Any],
+    settings: dict[str, Any],
+    seed: int,
+    extra_body: dict[str, Any],
+    comparison_id: str,
+) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    rounds = settings["staggered_runs"]
+    for level in settings["staggered"]:
+        print(
+            f"staggered/{level}: {rounds} rounds, {level - 1} incumbents + 1 arrival, "
+            f"{settings['staggered_depth']:,}-token long request",
+            flush=True,
+        )
+        decode_first = []
+        prefill_first = []
+        for round_index in range(1, rounds + 1):
+            row = staggered_decode_first_round(
+                client, model, prompts, level, round_index, settings, seed,
+                extra_body, comparison_id,
+            )
+            decode_first.append(row)
+            print(
+                f"  {round_index}: decode-first newcomer TTFT {row['newcomer_ttft_seconds']:.3f}s "
+                f"({row['newcomer_ttft_ratio_vs_solo']:.2f}x solo), incumbent stall "
+                + (
+                    f"{row['incumbent_max_arrival_window_gap_seconds']:.3f}s"
+                    if row["incumbent_max_arrival_window_gap_seconds"] is not None
+                    else "n/a"
+                )
+                + f" (whole-stream p95 gap {row['incumbent_max_p95_gap_seconds']:.3f}s)"
+                + ("" if row["overlap_valid"] else " [no overlap]"),
+                flush=True,
+            )
+            row = staggered_prefill_first_round(
+                client, model, prompts, level, round_index, settings, seed,
+                extra_body, comparison_id, decode_first[-1]["newcomer_solo_ttft_seconds"],
+            )
+            prefill_first.append(row)
+            if row["overlap_valid"]:
+                print(
+                    f"  {round_index}: prefill-first short TTFT median "
+                    f"{row['newcomer_median_ttft_seconds']:.3f}s "
+                    f"({row['newcomer_ttft_ratio_vs_solo']:.2f}x solo), long TTFT "
+                    f"{row['long_ttft_seconds']:.3f}s ({row['long_ttft_ratio_vs_solo']:.2f}x solo)",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  {round_index}: prefill-first arrivals did not overlap the prefill "
+                    "(increase --staggered-depth or lower --staggered-delay)",
+                    flush=True,
+                )
+        output[str(level)] = {
+            "decode_first": summarise_valid_rounds(decode_first, DECODE_FIRST_KEYS),
+            "prefill_first": summarise_valid_rounds(prefill_first, PREFILL_FIRST_KEYS),
+        }
+    return output
+
+
 def comma_ints(value: str) -> list[int]:
     result = [int(item.strip()) for item in value.split(",") if item.strip()]
     if not result or any(item < 1 for item in result):
@@ -734,6 +1151,30 @@ def main() -> None:
     parser.add_argument("--concurrency-runs", type=int, default=3)
     parser.add_argument("--concurrency-tokens", type=int, default=256)
     parser.add_argument("--concurrency-workload", choices=("code", "prose"), default="code")
+    parser.add_argument(
+        "--staggered", type=comma_ints, default=[],
+        help="total concurrency levels (incumbents + 1 arrival, each >= 2) for the "
+        "staggered-arrival suite; omitted by default",
+    )
+    parser.add_argument("--staggered-runs", type=int, default=3)
+    parser.add_argument(
+        "--staggered-depth", type=int, default=32768,
+        help="exact prompt tokens of the long request (cache-busting, like prefill)",
+    )
+    parser.add_argument(
+        "--staggered-incumbent-tokens", type=int, default=1024,
+        help="output cap of the streams that are already running when the arrival happens",
+    )
+    parser.add_argument(
+        "--staggered-arrival-tokens", type=int, default=256,
+        help="output cap of the arriving request(s)",
+    )
+    parser.add_argument(
+        "--staggered-delay", type=float, default=1.0,
+        help="seconds between every incumbent's first output (decode-first) or the long "
+        "request's start (prefill-first) and the arrival",
+    )
+    parser.add_argument("--staggered-workload", choices=("code", "prose"), default="code")
     parser.add_argument("--extra-body", default="{}", help="JSON merged into every chat request")
     parser.add_argument("--skip-prefill", action="store_true")
     parser.add_argument("--skip-concurrency", action="store_true")
@@ -744,6 +1185,15 @@ def main() -> None:
 
     if args.runs < 1 or args.prefill_runs < 1 or args.concurrency_runs < 1:
         parser.error("run counts must be positive")
+    if args.staggered:
+        if args.staggered_runs < 1:
+            parser.error("--staggered-runs must be positive")
+        if any(level < 2 for level in args.staggered) or len(set(args.staggered)) != len(args.staggered):
+            parser.error("--staggered levels must be distinct and at least 2")
+        if args.staggered_incumbent_tokens < 2 or args.staggered_arrival_tokens < 2:
+            parser.error("staggered token caps must be at least 2")
+        if not 0 <= args.staggered_delay <= 60:
+            parser.error("--staggered-delay must be between 0 and 60 seconds")
     try:
         base_url = validate_base_url(args.base_url)
         filename_label = safe_label(args.label)
@@ -751,6 +1201,8 @@ def main() -> None:
         extra_body = json.loads(args.extra_body)
         if not args.skip_prefill:
             validate_prefill_depths(args.prefill_depths, metadata["context_limit"])
+        if args.staggered:
+            validate_prefill_depths([args.staggered_depth], metadata["context_limit"])
     except (json.JSONDecodeError, OSError, ValueError) as error:
         parser.error(str(error))
     if not isinstance(extra_body, dict):
@@ -799,6 +1251,13 @@ def main() -> None:
             "concurrency_runs": args.concurrency_runs,
             "concurrency_tokens": args.concurrency_tokens,
             "concurrency_workload": args.concurrency_workload,
+            "staggered": args.staggered,
+            "staggered_runs": args.staggered_runs,
+            "staggered_depth": args.staggered_depth,
+            "staggered_incumbent_tokens": args.staggered_incumbent_tokens,
+            "staggered_arrival_tokens": args.staggered_arrival_tokens,
+            "staggered_delay_seconds": args.staggered_delay,
+            "staggered_workload": args.staggered_workload,
         },
     }
 
@@ -833,6 +1292,16 @@ def main() -> None:
                 args.seed,
                 extra_body,
                 args.concurrency_workload,
+                args.comparison_id,
+            )
+        if args.staggered:
+            result["staggered"] = run_staggered(
+                client,
+                model,
+                prompts,
+                result["settings"],
+                args.seed,
+                extra_body,
                 args.comparison_id,
             )
     except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as error:
