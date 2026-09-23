@@ -33,6 +33,11 @@ is recorded as `truncated`, and counts against completion and SLO attainment. On
 10 of 12 first turns in one validation run were truncated. Six of them spent the whole budget on reasoning and
 returned no visible text.
 
+One task also needed a way out. "Review this code for a cancellation or concurrency bug" gave no outcome for code
+without such a bug, and all four of those first turns in the second validation run reasoned past 4,096 tokens without
+answering. The task now reads: "if you find none, say so and name the riskiest code path", with a 300-word answer
+bound. Traces prepared before this change differ in that text; the example traces are regenerated.
+
 For such models, declare larger budgets with `--max-tokens`, `--long-max-tokens` and `--followup-max-tokens`
 (16 to 16,384). `replay-sweep` accepts the first two. The trace records its budgets under
 `provenance.output_budgets`. Budgets are part of the workload: compare only runs prepared with the same budgets.

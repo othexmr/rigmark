@@ -82,3 +82,20 @@ class Cli(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class Examples(unittest.TestCase):
+    def test_example_traces_are_what_the_preparer_produces(self):
+        root = Path(R.__file__).parent / 'examples/replay'
+        for direction in ('sessions', 'short-first', 'long-first'):
+            committed = json.loads((root / f'{direction}-6.json').read_text())
+            fresh = P.prepare(root / 'queue_example.py', root / 'service_notes.md',
+                              [root / 'queue_example.py', root / 'service_notes.md'], 6, direction, 1,
+                              committed['cache_policy'])
+            self.assertEqual(fresh, committed, direction)
+
+    def test_open_ended_review_names_the_no_bug_outcome(self):
+        # A review task without a way out let GLM-5.3 reason past a 4,096-token budget with no visible answer.
+        (review,) = [q for c, q in P.QUESTIONS if 'concurrency bug' in q]
+        self.assertIn('if you find none, say so', review)
+        self.assertIn('under 300 words', review)

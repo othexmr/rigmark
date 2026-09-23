@@ -9,7 +9,10 @@ from pathlib import Path
 from replay import PROTOCOL, validate
 
 QUESTIONS = [
-    ('code', 'Review this code for a cancellation or concurrency bug. Describe one concrete failing sequence and the smallest fix. Avoid style changes.'),
+    # Revised 2026-09-23: the original wording had no way out when the code has no such bug, and GLM-5.3 at
+    # reasoning_effort low then reasoned past a 4,096-token budget without a visible answer (4 of 4 such first turns in
+    # one validation run). The task now names the no-bug outcome and bounds the answer.
+    ('code', 'Review this code for a cancellation or concurrency bug. If you find one, describe one concrete failing sequence and the smallest fix; if you find none, say so and name the riskiest code path. Avoid style changes. Keep the answer under 300 words.'),
     ('document', 'Summarize the supplied material for an engineer joining the project. Give the main constraint, the evidence behind it and one unresolved question.'),
     ('code', 'Propose three focused regression tests for this implementation. Include inputs and expected outcomes; explain which failure each catches.'),
     ('document', 'Explain the operational trade-offs in the material in plain language. Separate measured findings from assumptions; do not invent numbers.'),

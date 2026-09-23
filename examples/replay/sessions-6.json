@@ -26,7 +26,12 @@
       }
     ],
     "padding": "none",
-    "token_lengths": "measured from server usage, not assumed"
+    "token_lengths": "measured from server usage, not assumed",
+    "output_budgets": {
+      "initial": 1024,
+      "long": 1536,
+      "followup": 768
+    }
   },
   "cache_policy": "run-isolated",
   "system": "Help an engineer solve the task using only the supplied material. Be precise and concise. Admit missing evidence.",
@@ -37,7 +42,7 @@
       "category": "code",
       "turns": [
         {
-          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. Describe one concrete failing sequence and the smallest fix. Avoid style changes.",
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. If you find one, describe one concrete failing sequence and the smallest fix; if you find none, say so and name the riskiest code path. Avoid style changes. Keep the answer under 300 words.",
           "max_tokens": 1024,
           "think_s": 0
         },
@@ -125,7 +130,7 @@
       "category": "code",
       "turns": [
         {
-          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. Describe one concrete failing sequence and the smallest fix. Avoid style changes.",
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. If you find one, describe one concrete failing sequence and the smallest fix; if you find none, say so and name the riskiest code path. Avoid style changes. Keep the answer under 300 words.",
           "max_tokens": 1024,
           "think_s": 0
         },
