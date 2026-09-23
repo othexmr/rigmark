@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 
 from token_timeline import TokenTimeline, window_tokens
+from staggered_metrics import VERSION as STAGGERED_METRICS_VERSION, add_evidence, window_metrics
 
 PROTOCOL_VERSION = "1.1.0"
 HERE = Path(__file__).resolve().parent
@@ -31,6 +32,7 @@ SOURCE_FILES = (
     "audit_code.py",
     "bench.py",
     "token_timeline.py",
+    "staggered_metrics.py",
     "compare.py",
     "configure.py",
     "prompts.json",
@@ -755,6 +757,7 @@ def stall_analysis(
         if window_start <= end <= window_end:
             window.append(gap)
     return {
+        **window_metrics(row, window_start, window_end),
         "events": len(instants),
         "arrival_window_completion_tokens": window_tokens(row, window_start, window_end),
         "median_gap_seconds": round(statistics.median(gaps), 6) if gaps else 0.0,
@@ -870,7 +873,7 @@ def staggered_decode_first_round(
         for stall in stalls
         if stall["arrival_window_max_gap_seconds"] is not None
     ]
-    return {
+    return add_evidence({
         "round": round_index,
         "overlap_valid": overlap_valid,
         "arrival_after_last_incumbent_first_output_seconds": round(arrival - last_first_output, 6),
@@ -894,7 +897,7 @@ def staggered_decode_first_round(
         "solo": solo,
         "newcomer": newcomer,
         "incumbents": incumbent_rows,
-    }
+    }, level, "decode_first")
 
 
 def staggered_prefill_first_round(
@@ -998,7 +1001,7 @@ def staggered_prefill_first_round(
                 statistics.median(row["decode_tokens_per_second"] for row in newcomer_rows), 3
             ),
         })
-    return result
+    return add_evidence(result, level, "prefill_first")
 
 
 DECODE_FIRST_KEYS = (
@@ -1041,8 +1044,10 @@ def run_staggered(
     seed: int,
     extra_body: dict[str, Any],
     comparison_id: str,
+    output: dict[str, Any] | None = None,
+    on_progress: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    output: dict[str, Any] = {}
+    output = {} if output is None else output
     rounds = settings["staggered_runs"]
     for level in settings["staggered"]:
         print(
@@ -1052,12 +1057,20 @@ def run_staggered(
         )
         decode_first = []
         prefill_first = []
+        def checkpoint():
+            output[str(level)] = {
+                "decode_first": summarise_valid_rounds(decode_first, DECODE_FIRST_KEYS),
+                "prefill_first": summarise_valid_rounds(prefill_first, PREFILL_FIRST_KEYS),
+            }
+            if on_progress is not None:
+                on_progress()
         for round_index in range(1, rounds + 1):
             row = staggered_decode_first_round(
                 client, model, prompts, level, round_index, settings, seed,
                 extra_body, comparison_id,
             )
             decode_first.append(row)
+            checkpoint()
             print(
                 f"  {round_index}: decode-first newcomer TTFT {row['newcomer_ttft_seconds']:.3f}s "
                 f"({row['newcomer_ttft_ratio_vs_solo']:.2f}x solo), incumbent stall "
@@ -1075,6 +1088,7 @@ def run_staggered(
                 extra_body, comparison_id, decode_first[-1]["newcomer_solo_ttft_seconds"],
             )
             prefill_first.append(row)
+            checkpoint()
             if row["overlap_valid"]:
                 print(
                     f"  {round_index}: prefill-first short TTFT median "
@@ -1103,11 +1117,13 @@ def comma_ints(value: str) -> list[int]:
     return result
 
 
-def validate_prefill_depths(depths: list[int], context_limit: int) -> None:
+def validate_prefill_depths(depths: list[int], context_limit: int, output_tokens: int = 8) -> None:
     for depth in depths:
-        if depth + 8 > context_limit:
+        if depth < 1 or output_tokens < 1:
+            raise ValueError("prompt depth and output budget must be positive")
+        if depth + output_tokens > context_limit:
             raise ValueError(
-                f"prefill depth {depth} plus 8 generated tokens exceeds "
+                f"prefill depth {depth} plus {output_tokens} generated tokens exceeds "
                 f"the declared context limit {context_limit}"
             )
 
@@ -1225,7 +1241,8 @@ def main() -> None:
         if not args.skip_prefill:
             validate_prefill_depths(args.prefill_depths, metadata["context_limit"])
         if args.staggered:
-            validate_prefill_depths([args.staggered_depth], metadata["context_limit"])
+            validate_prefill_depths([args.staggered_depth], metadata["context_limit"],
+                                    max(args.staggered_incumbent_tokens, args.staggered_arrival_tokens))
     except (json.JSONDecodeError, OSError, ValueError) as error:
         parser.error(str(error))
     if not isinstance(extra_body, dict):
@@ -1275,6 +1292,7 @@ def main() -> None:
             "concurrency_tokens": args.concurrency_tokens,
             "concurrency_workload": args.concurrency_workload,
             "staggered": args.staggered,
+            "staggered_metrics_version": STAGGERED_METRICS_VERSION,
             "staggered_runs": args.staggered_runs,
             "staggered_depth": args.staggered_depth,
             "staggered_incumbent_tokens": args.staggered_incumbent_tokens,
@@ -1327,6 +1345,8 @@ def main() -> None:
                 args.seed,
                 extra_body,
                 args.comparison_id,
+                output=result.setdefault("staggered", {}),
+                on_progress=lambda: write_result(result, output),
             )
     except (urllib.error.URLError, TimeoutError, RuntimeError, ValueError) as error:
         result["error"] = str(error)

@@ -70,10 +70,9 @@ class CompareTest(unittest.TestCase):
         })
         self.assertEqual([], compare.comparable(result, result))
 
-    def test_legacy_receipt_without_staggered_settings_is_rejected(self):
+    def test_legacy_receipts_without_optional_suite_remain_comparable(self):
         mismatches = compare.comparable(self.result, self.result)
-        self.assertIn("settings.staggered", mismatches)
-        self.assertIn("settings.staggered_depth", mismatches)
+        self.assertEqual([], mismatches)
 
     def test_dirty_receipts_require_matching_worktree_hash(self):
         left = json.loads(json.dumps(self.result))

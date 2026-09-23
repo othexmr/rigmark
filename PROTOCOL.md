@@ -147,3 +147,30 @@ for a reproducible public reference.
 The receipt SHA256 is a fingerprint of the published JSON bytes, not a digital
 signature or independent attestation. Comparison and reporting recompute
 summaries and basic gates from the raw rows before producing a card.
+
+### Staggered evidence extension 2
+
+New staggered receipts declare `settings.staggered_metrics_version: 2`.
+The historical `arrival_window_*` fields retain their ending-in-window
+meaning. New `max_intersecting_gap_seconds` fields include an inter-event gap
+that crosses either observation boundary; `max_clipped_gap_seconds` measures
+only its intersection. `terminal_silence_clipped_seconds` is separately
+right-censored silence after the last measured output, not a fabricated token
+interval. SSE output may include reasoning; these are client delivery times.
+
+Each round's `evidence` records common-origin makespan, actual completion
+lengths, pre-arrival elapsed time, open incumbent connections and incumbents
+with output after arrival. Neither count proves how many GPU decoders were
+active. Queued submissions remain part of the result. Valid/total counts and
+all invalid rounds are retained. Version 2 recomputes timing, overlap, pauses
+and summaries from stream evidence; incompatible extension versions cannot
+be compared. Legacy receipts with no optional staggered suite remain readable
+and mutually comparable.
+
+Use a new `--comparison-id` for each separate cold invocation (including each
+arrival-delay offset); use the same ID across matched arms on fresh boots.
+`--seed` controls sampling, not prefix generation. Distinct prompts alone do
+not prove coldness; check server cached-token evidence where available. A
+failed later request leaves completed staggered rounds in the failure receipt.
+Context checks reserve the larger configured long-request output cap, not the
+ordinary prefill probe's eight tokens.

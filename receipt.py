@@ -7,6 +7,8 @@ import json
 import math
 import re
 import statistics
+
+from staggered_metrics import derived, same, timeline, window_metrics, DECODE_KEYS, PREFILL_KEYS
 from typing import Any
 
 
@@ -471,6 +473,10 @@ def check_staggered(
     depth = settings.get("staggered_depth")
     if not is_int(depth) or depth < 1:
         errors.append("settings.staggered_depth must be a positive integer")
+    metrics_version = settings.get("staggered_metrics_version", 1)
+    if type(metrics_version) is not int or metrics_version not in (1, 2):
+        errors.append("unknown staggered_metrics_version")
+        return
     for level in levels:
         path = f"staggered.{level}"
         value = staggered.get(str(level))
@@ -514,5 +520,41 @@ def check_staggered(
                 long_row = row.get(single)
                 if isinstance(long_row, dict) and long_row.get("prompt_tokens") != depth:
                     errors.append(f"{row_path}.{single}.prompt_tokens does not match staggered depth")
-            if owner.get("valid_rounds") != valid or owner.get("total_rounds") != len(rows):
+                if metrics_version == 2:
+                    try:
+                        same(row["round"], index, "round index")
+                        expected, evidence = derived(row, level, direction)
+                        for key, expected_value in expected.items():
+                            same(row.get(key), expected_value, key)
+                        same(row.get("evidence"), evidence, "evidence")
+                        if direction == "decode_first":
+                            # Imports here avoid bench initialization during ordinary validation.
+                            from bench import stall_analysis
+                            a, b = [row["newcomer"][k] for k in (
+                                "started_monotonic_seconds", "first_output_monotonic_seconds")]
+                            stalls = [stall_analysis(stream, a, b) for stream in streams]
+                            for stream, stall in zip(streams, stalls):
+                                same(stream.get("stall"), stall, "stall")
+                            gaps = [v["arrival_window_max_gap_seconds"] for v in stalls
+                                    if v["arrival_window_max_gap_seconds"] is not None]
+                            same(row.get("incumbent_max_arrival_window_gap_seconds"),
+                                 max(gaps) if gaps else None, "legacy arrival gap")
+                            same(row.get("incumbent_max_p95_gap_seconds"),
+                                 max(v["p95_gap_seconds"] for v in stalls), "whole-stream p95")
+                        else:
+                            reference = value["decode_first"]["rounds"][index-1]["solo"]["ttft_seconds"]
+                            same(row["long_solo_ttft_seconds"], reference, "paired long solo")
+                    except (KeyError, TypeError, ValueError, IndexError) as exc:
+                        errors.append(f"{row_path}: {exc}")
+            if (not is_int(owner.get("valid_rounds")) or not is_int(owner.get("total_rounds"))
+                    or owner.get("valid_rounds") != valid or owner.get("total_rounds") != len(rows)):
                 errors.append(f"{path}.{direction} valid/total round counts do not match rows")
+
+            if metrics_version == 2:
+                for key in DECODE_KEYS if direction == "decode_first" else PREFILL_KEYS:
+                    scored = [r for r in rows if isinstance(r, dict) and r.get("overlap_valid") is True
+                              and r.get(key) is not None]
+                    if scored:
+                        check_summary(errors, owner, key, scored, key, f"{path}.{direction}")
+                    elif owner.get(key) is not None:
+                        errors.append(f"{path}.{direction}.{key} scores invalid/absent rounds")

@@ -67,7 +67,10 @@ def comparable(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
     )
     mismatches = [f"left receipt: {error}" for error in validate_result(left)]
     mismatches.extend(f"right receipt: {error}" for error in validate_result(right))
+    staggered_enabled = any(bool(r.get("settings", {}).get("staggered")) for r in (left, right))
     for path in paths:
+        if path[0] == "settings" and path[1].startswith("staggered") and not staggered_enabled:
+            continue
         left_value = comparable_value(left, path)
         right_value = comparable_value(right, path)
         if (
@@ -98,6 +101,10 @@ def comparable(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
         or left_value != right_value
     ):
         mismatches.append(".".join(path))
+    if staggered_enabled:
+        versions = [r.get("settings", {}).get("staggered_metrics_version", 1) for r in (left, right)]
+        if versions[0] != versions[1]:
+            mismatches.append("settings.staggered_metrics_version")
     # Older receipts predate optional delivery accounting and mean off.
     modes = []
     for receipt in (left, right):
