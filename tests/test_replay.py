@@ -282,6 +282,30 @@ class CompareAndCLI(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'score differs'):C.compare(root/'control',root/'candidate')
         finally:server.shutdown();server.server_close();thread.join()
 
+    def test_total_deadline_bounds_trickled_headers(self):
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args): pass
+            def do_POST(self):
+                self.rfile.read(int(self.headers['Content-Length']))
+                try:
+                    self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nX-Slow: ')
+                    self.wfile.flush()
+                    for _ in range(40):
+                        time.sleep(.015)
+                        self.wfile.write(b'x'); self.wfile.flush()
+                    self.wfile.write(b'\r\n\r\n')
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            row = R.Client(f'http://127.0.0.1:{server.server_port}', 'mock', .08).stream([], 10, {})
+            self.assertEqual(row['error']['type'], 'TimeoutError')
+            self.assertFalse(row['done'])
+            self.assertLess(row['finished']-row['started'], .35)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_total_deadline_retains_partial_receipt(self):
         class Handler(BaseHTTPRequestHandler):
             def log_message(self,*args):pass

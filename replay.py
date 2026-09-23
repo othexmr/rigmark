@@ -5,6 +5,7 @@ import argparse
 import codecs
 import hashlib
 import http.client
+import io
 import json
 import math
 import os
@@ -152,6 +153,38 @@ class StreamState:
                 'done': self.done, 'total_sse_events': self.total_events}
 
 
+class DeadlineReader(io.RawIOBase):
+    """Bound each underlying receive, including reads inside header parsing."""
+    def __init__(self, raw, sock, deadline):
+        super().__init__()
+        self.raw, self.sock, self.deadline = raw, sock, deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('total request deadline')
+        self.sock.settimeout(remaining)
+        return self.raw.readinto(buffer)
+
+    def close(self):
+        try:
+            self.raw.close()
+        finally:
+            super().close()
+
+
+class DeadlineResponse(http.client.HTTPResponse):
+    def __init__(self, sock, *args, deadline, **kwargs):
+        super().__init__(sock, *args, **kwargs)
+        # HTTPResponse has not read yet. Preserve the socket-file ownership while
+        # placing the deadline below buffering, where slow partial lines recur.
+        raw = self.fp.detach()
+        self.fp = io.BufferedReader(DeadlineReader(raw, sock, deadline))
+
+
 class Client:
     def __init__(self, base_url, model, timeout=180, api_key=''):
         u = urlsplit(base_url.rstrip('/'))
@@ -170,6 +203,9 @@ class Client:
         headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
         if self.key: headers['Authorization'] = 'Bearer ' + self.key
         started = time.monotonic(); state = StreamState(); parser = SSE(); failure = None
+        response = None
+        conn.response_class = lambda *args, **kwargs: DeadlineResponse(
+            *args, deadline=started+self.timeout, **kwargs)
         try:
             conn.connect()
             def budget():
@@ -187,10 +223,6 @@ class Client:
             while not state.done:
                 remaining = self.timeout - (time.monotonic() - started)
                 if remaining <= 0: raise TimeoutError('total request deadline')
-                # HTTP/1.0 close responses detach conn.sock; their response socket
-                # retains the original timeout. Deadline is checked on every read.
-                sock = conn.sock or getattr(getattr(response.fp, 'raw', None), '_sock', None)
-                if sock is not None: sock.settimeout(remaining)
                 chunk = response.read1(65536)
                 observed = time.monotonic() - started
                 if observed > self.timeout: raise TimeoutError('total request deadline')
@@ -202,6 +234,8 @@ class Client:
         except Exception as error:
             failure = {'type': type(error).__name__, 'message': str(error)}
         finally:
+            if response is not None:
+                response.close()
             conn.close()
         row = state.result()
         row.update(started=started, finished=time.monotonic(), error=failure,

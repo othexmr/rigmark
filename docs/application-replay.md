@@ -44,7 +44,9 @@ Arrivals use a common client clock, with no barrier waiting for incumbents to
 finish. Follow-up turns wait for the preceding answer and declared think time.
 Failures and capped answers remain in the denominator; a failed turn blocks its
 own dependent turns. There are no retries, cache flushes or server lifecycle
-commands. `--timeout` bounds each stream. `--max-dispatch-lag` (default 0.05 s)
+commands. `--timeout` bounds HTTP stream reads, including trickled headers.
+Operating-system DNS resolution and connection address attempts can take longer;
+resolve endpoint connectivity before a timed campaign. `--max-dispatch-lag` (default 0.05 s)
 is a client scheduling validity bound, not a server latency target.
 
 Optional SLO scoring requires all three second-valued flags:
