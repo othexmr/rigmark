@@ -153,6 +153,14 @@ arrivals; lower rate x duration if it refuses.
 `max_rate_meeting_target_per_s` is the highest rate whose attainment reaches `--target`, with every lower rate also
 reaching it. A non-monotone curve is flagged (`monotone: false`), not smoothed. SLO thresholds are required. The
 sweep stops after a rate whose completion fraction falls below `--stop-below` (default 0.5) and never retries.
+Ordinary workload failures remain in the SLO denominator and may be a valid overload measurement. Execution
+failures, changed supplied identity, or an invalid client schedule instead stop the sweep with exit code 2;
+that rate is ineligible for capacity even if its score reaches the target. Receipts report `measurement_valid`.
+
+A fresh campaign UUID supplies each run-isolated prefix, independently of `--seed`. Repeating the same workload
+seed therefore preserves the trace without silently reusing a previous campaign's namespace. `--run-id` can
+explicitly choose the campaign namespace; reusing it against the same resident may reuse cached prefixes.
+Every manifest records the campaign and per-rate run IDs. A fresh namespace still does not prove coldness.
 
 ## Receipt files
 

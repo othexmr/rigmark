@@ -23,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import time
+import uuid
 
 import replay as R
 import replay_prepare as P
@@ -34,7 +35,10 @@ def summarise(points, target):
     for p in points:
         s = p.get('score') or {}
         attainment = s.get('slo_fraction_all_planned')
-        met = attainment is not None and attainment >= target and s.get('client_schedule_valid') is True
+        eligible = (p.get('measurement_valid') is True
+                    and p['status'] in ('COMPLETED', 'COMPLETED_WITH_FAILURES_NO_RETRY')
+                    and s.get('client_schedule_valid') is True)
+        met = eligible and attainment is not None and attainment >= target
         row = {'rate_per_s': p['rate'], 'status': p['status'], 'planned': s.get('planned_requests'),
                'completion_fraction': s.get('completion_fraction'), 'slo_attainment': attainment,
                'slo_goodput_per_s': s.get('slo_goodput_per_s'),
@@ -42,7 +46,8 @@ def summarise(points, target):
                'visible_ttft_p95_s': (s.get('visible_ttft_s') or {}).get('p95'),
                'output_ttft_median_s': (s.get('output_ttft_s') or {}).get('median'),
                'e2e_median_s': (s.get('e2e_s') or {}).get('median'),
-               'client_schedule_valid': s.get('client_schedule_valid'), 'target_met': met}
+               'client_schedule_valid': s.get('client_schedule_valid'),
+               'measurement_valid': eligible, 'target_met': met}
         table.append(row)
         if met and not broken:
             capacity = p['rate']
@@ -53,7 +58,8 @@ def summarise(points, target):
     return {'target_attainment': target, 'rates': table,
             'max_rate_meeting_target_per_s': capacity, 'monotone': monotone,
             'semantics': 'Attainment counts every planned request (failures included) against the declared SLO; '
-                         'capacity is the highest rate with every lower rate also meeting the target.'}
+                         'capacity is the highest rate with every lower rate also meeting the target. '
+                         'Only execution-, identity- and client-valid measurements qualify.'}
 
 
 def main():
@@ -64,6 +70,8 @@ def main():
     ap.add_argument('--rates', required=True, help='comma-separated requests per second, e.g. 0.1,0.2,0.4')
     ap.add_argument('--duration', type=float, default=120)
     ap.add_argument('--seed', type=int, default=1)
+    ap.add_argument('--run-id', help='campaign namespace; default: fresh UUID independent of workload seed. '
+                    'Reusing an ID can reuse cached prefixes.')
     ap.add_argument('--long-every', type=int, default=6)
     ap.add_argument('--cache-policy', choices=('natural', 'run-isolated'), default='run-isolated')
     ap.add_argument('--output', type=Path, required=True)
@@ -102,12 +110,17 @@ def main():
         R.number(value, 'SLO')
     if a.slo_basis != 'visible':
         slo['basis'] = a.slo_basis
+    campaign_id = a.run_id if a.run_id is not None else uuid.uuid4().hex
+    if not campaign_id.strip() or len(campaign_id.splitlines()) != 1:
+        ap.error('run-id must be a nonempty single line')
     a.output.mkdir(parents=True, exist_ok=False)
     identity_raw = a.identity.read_bytes(); identity = json.loads(identity_raw)
     client = R.Client(a.base_url, a.model, a.timeout, os.getenv('OPENAI_API_KEY', ''), a.delivery_tokens)
     points = []
+    exit_code = 0
     for rate in rates:
-        label = f'rate-{rate:g}'
+        label = 'rate-' + (str(int(rate)) if rate.is_integer() else repr(rate))
+        run_id = f'sweep-{campaign_id}-{label}'
         run = a.output / label
         trace = P.prepare_open_loop(a.code, a.document, a.context, rate, a.duration, a.seed, a.long_every, a.cache_policy,
                                     output_budgets)
@@ -117,40 +130,47 @@ def main():
         R.save(run / 'manifest.json', {'receipt_version': 1, 'protocol': R.PROTOCOL, 'trace_sha256': R.digest(raw),
                                        'trace': trace, 'runner_sha256': R.digest(Path(R.__file__).read_bytes()),
                                        'identity': identity, 'identity_sha256': R.digest(identity_raw), 'model': a.model,
-                                       'run_id': f'sweep-{a.seed}-{label}', 'extra_body': extra, 'timeout': a.timeout,
+                                       'run_id': run_id, 'extra_body': extra, 'timeout': a.timeout,
                                        'max_dispatch_lag_s': a.max_dispatch_lag,
                                        'delivery_token_accounting': a.delivery_tokens,
                                        'cache_claim': 'No cache flush. Run-isolated prefix is not proof of coldness.',
-                                       'slo': slo, 'sweep': {'rate_per_s': rate, 'rates': rates, 'target': a.target}})
+                                       'slo': slo, 'sweep': {'rate_per_s': rate, 'rates': rates, 'target': a.target,
+                                                            'campaign_id': campaign_id}})
         cpu = time.process_time()
         try:
-            rows = R.execute(trace, client, run, f'sweep-{a.seed}-{label}', extra)
+            rows = R.execute(trace, client, run, run_id, extra)
             client_cpu = time.process_time() - cpu
             score = R.summarise_run(rows, slo, a.max_dispatch_lag)
             R.save(run / 'score.json', score)
             unchanged = a.identity.read_bytes() == identity_raw
-            passed = unchanged and score['client_schedule_valid'] and all(r['status'] == 'completed' for r in rows)
+            valid = unchanged and score['client_schedule_valid'] is True
+            passed = valid and all(r['status'] == 'completed' for r in rows)
             R.save(run / 'terminal.json', {'status': 'COMPLETED' if passed else 'COMPLETED_WITH_FAILURES_NO_RETRY',
                                            'identity_file_unchanged': unchanged,
+                                           'measurement_valid': valid,
                                            'client_schedule_valid': score['client_schedule_valid'],
                                            'identity_scope': 'supplied receipt only; owner must verify live runtime',
                                            'completed': sum(r['status'] == 'completed' for r in rows), 'planned': len(rows),
                                            'client_cpu_seconds': round(client_cpu, 6),
                                            'client_cpu_us_per_sse_event': (round(1e6 * client_cpu / score['client_sse_events'], 3)
                                                                            if score['client_sse_events'] else None)})
-            points.append({'rate': rate, 'score': score, 'status': 'COMPLETED' if passed else 'COMPLETED_WITH_FAILURES_NO_RETRY'})
+            points.append({'rate': rate, 'score': score, 'measurement_valid': valid,
+                           'status': 'COMPLETED' if passed else 'COMPLETED_WITH_FAILURES_NO_RETRY'})
         except Exception as error:
-            R.save(run / 'terminal.json', {'status': 'FAILED_NO_RETRY', 'type': type(error).__name__, 'message': str(error)})
-            points.append({'rate': rate, 'score': None, 'status': 'FAILED_NO_RETRY'})
+            R.save(run / 'terminal.json', {'status': 'FAILED_NO_RETRY', 'measurement_valid': False,
+                                           'type': type(error).__name__, 'message': str(error)})
+            points.append({'rate': rate, 'score': None, 'measurement_valid': False, 'status': 'FAILED_NO_RETRY'})
         summary = summarise(points, a.target)
         R.save(a.output / 'sweep.json', summary)
         last = points[-1]['score'] or {}
-        if points[-1]['score'] is None or (last.get('completion_fraction') or 0) < a.stop_below:
+        if not points[-1]['measurement_valid']:
+            exit_code = 2
+        if exit_code or (last.get('completion_fraction') or 0) < a.stop_below:
             summary['stopped_after_rate_per_s'] = rate
             R.save(a.output / 'sweep.json', summary)
             break
-    print(json.dumps(summarise(points, a.target)))
-    return 0
+    print(json.dumps(summary))
+    return exit_code
 
 
 if __name__ == '__main__':

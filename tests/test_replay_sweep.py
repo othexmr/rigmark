@@ -7,6 +7,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
+from contextlib import redirect_stdout
+import io
 
 import replay as R
 import replay_compare as C
@@ -46,7 +49,7 @@ class Arrivals(unittest.TestCase):
 
 class Summary(unittest.TestCase):
     def point(self, rate, attainment, valid=True, completion=1.0):
-        return {'rate': rate, 'status': 'COMPLETED', 'score': {'slo_fraction_all_planned': attainment,
+        return {'rate': rate, 'status': 'COMPLETED', 'measurement_valid': True, 'score': {'slo_fraction_all_planned': attainment,
                 'client_schedule_valid': valid, 'completion_fraction': completion, 'planned_requests': 10}}
 
     def test_capacity_is_highest_rate_with_all_lower_rates_meeting_target(self):
@@ -62,6 +65,83 @@ class Summary(unittest.TestCase):
     def test_invalid_schedule_and_failures_never_meet_target(self):
         s = S.summarise([self.point(.1, 1., valid=False), {'rate': .2, 'status': 'FAILED_NO_RETRY', 'score': None}], .9)
         self.assertIsNone(s['max_rate_meeting_target_per_s'])
+
+    def test_failure_or_missing_validity_cannot_claim_capacity(self):
+        for field, value in (('measurement_valid', False), ('measurement_valid', None),
+                             ('status', 'FAILED_NO_RETRY')):
+            p = self.point(1, 1)
+            p[field] = value
+            summary = S.summarise([p], .9)
+            self.assertIsNone(summary['max_rate_meeting_target_per_s'])
+            self.assertFalse(summary['rates'][0]['target_met'])
+
+
+class FailureReceipts(unittest.TestCase):
+    def run_sweep(self, failure=None, completion=1.0):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source = root / 'code.txt'; source.write_text('def add(a, b): return a + b')
+            identity = root / 'identity.json'; identity.write_text('{}')
+            output = root / 'sweep'
+            argv = ['replay-sweep', '--code', str(source), '--document', str(source), '--context', str(source),
+                    '--rates', '4,8', '--duration', '4', '--seed', '2', '--output', str(output),
+                    '--base-url', 'http://127.0.0.1:9', '--model', 'mock', '--identity', str(identity),
+                    '--slo-visible', '2', '--slo-gap', '2', '--slo-total', '5', '--target', '.5']
+            def execute(trace, client, run, run_id, extra):
+                if failure == 'exception':
+                    raise OSError('simulated write failure')
+                if failure == 'identity':
+                    identity.write_text('{"changed":true}')
+                return [dict(id=f'{session["id"]}:0', status='completed' if i < len(trace['sessions']) * completion else 'error',
+                             category=session['category'], started_s=0, finished_s=1,
+                             dispatch_lag_s=1 if failure == 'schedule' else 0,
+                             user_visible_ttft_s=.1, client_e2e_s=1)
+                        for i, session in enumerate(trace['sessions'])]
+            stdout = io.StringIO()
+            with patch.object(sys, 'argv', argv), patch.object(R, 'execute', side_effect=execute) as executed, redirect_stdout(stdout):
+                code = S.main()
+            summary = json.loads((output / 'sweep.json').read_text())
+            self.assertEqual(json.loads(stdout.getvalue()), summary)
+            return code, summary, json.loads((output / 'rate-4/terminal.json').read_text()), executed.call_count
+
+    def test_identity_change_excludes_rate_and_stops_with_failure(self):
+        code, summary, terminal, calls = self.run_sweep('identity')
+        self.assertEqual(code, 2)
+        self.assertFalse(terminal['identity_file_unchanged'])
+        self.assertEqual(summary['rates'][0]['slo_attainment'], 1)
+        self.assertIsNone(summary['max_rate_meeting_target_per_s'])
+        self.assertEqual(calls, 1)
+
+    def test_invalid_schedule_stops_with_failure(self):
+        code, summary, terminal, calls = self.run_sweep('schedule')
+        self.assertEqual(code, 2)
+        self.assertFalse(terminal['measurement_valid'])
+        self.assertIsNone(summary['max_rate_meeting_target_per_s'])
+        self.assertEqual(calls, 1)
+
+    def test_exception_retains_failure_and_returns_nonzero(self):
+        code, summary, terminal, calls = self.run_sweep('exception')
+        self.assertEqual(code, 2)
+        self.assertEqual(terminal['status'], 'FAILED_NO_RETRY')
+        self.assertEqual(summary['stopped_after_rate_per_s'], 4)
+        self.assertIsNone(summary['max_rate_meeting_target_per_s'])
+        self.assertEqual(calls, 1)
+
+    def test_ordinary_partial_workload_failure_can_meet_declared_target(self):
+        code, summary, terminal, calls = self.run_sweep(completion=.5)
+        self.assertEqual(code, 0)
+        self.assertTrue(terminal['measurement_valid'])
+        self.assertEqual(terminal['status'], 'COMPLETED_WITH_FAILURES_NO_RETRY')
+        self.assertEqual(summary['max_rate_meeting_target_per_s'], 8)
+        self.assertEqual(calls, 2)
+
+    def test_overload_stop_is_not_an_infrastructure_failure(self):
+        code, summary, terminal, calls = self.run_sweep(completion=0)
+        self.assertEqual(code, 0)
+        self.assertTrue(terminal['measurement_valid'])
+        self.assertEqual(summary['stopped_after_rate_per_s'], 4)
+        self.assertIsNone(summary['max_rate_meeting_target_per_s'])
+        self.assertEqual(calls, 1)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -99,6 +179,18 @@ class EndToEnd(unittest.TestCase):
                 # Each rate directory is an ordinary, re-verifiable replay receipt.
                 result = C.compare(root / 'sweep' / 'rate-4', root / 'sweep' / 'rate-4')
                 self.assertEqual(result['overall']['completion_fraction']['candidate'], 1)
+                # Same seed and inputs, separate campaigns: traces match but system prefixes and requests differ.
+                argv[argv.index('--output') + 1] = str(root / 'repeat')
+                repeated = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+                self.assertEqual(repeated.returncode, 0, repeated.stderr)
+                first, second = root / 'sweep/rate-4', root / 'repeat/rate-4'
+                manifests = [json.loads((p / 'manifest.json').read_text()) for p in (first, second)]
+                self.assertEqual(manifests[0]['trace_sha256'], manifests[1]['trace_sha256'])
+                self.assertNotEqual(manifests[0]['run_id'], manifests[1]['run_id'])
+                requests = [json.loads((p / 'request-0001.json').read_text()) for p in (first, second)]
+                self.assertNotEqual(requests[0]['request_sha256'], requests[1]['request_sha256'])
+                C.load_run(second)
+
         finally:
             server.shutdown(); server.server_close(); thread.join()
 
