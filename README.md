@@ -1,5 +1,15 @@
 # RigMark
 
+This fork develops optional serving-interference and application-replay extensions
+to [alexellis/rigmark](https://github.com/alexellis/rigmark). Upstream authorship,
+MIT licensing and published reference receipts are preserved. New collector
+features have CPU/loopback tests; server compatibility and measurement overhead
+need validation on each appliance.
+
+See [staggered measurement guidance](docs/staggered-measurement.md),
+[token delivery accounting](docs/token-delivery.md), and
+[application replay](docs/application-replay.md).
+
 ![RigMark — benchmarks local AI how coding agents actually use it](docs/images/rigmark-hero.png)
 
 **RigMark benchmarks local AI how coding agents actually use it.**

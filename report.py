@@ -182,14 +182,14 @@ def render(result: dict[str, Any], fingerprint: str) -> str:
         lines.extend((
             section("STAGGERED ARRIVALS"),
             line(
-                f"S{level_value} • {level_value - 1} RUNNING + 1 ARRIVING • "
+                f"S{level_value} • {level_value} SUBMITTED REQUESTS • "
                 f"{settings['staggered_depth']:,}-TOKEN LONG REQUEST • "
                 f"{settings['staggered_incumbent_tokens']}/{settings['staggered_arrival_tokens']}-TOKEN CAPS"
             ),
             line(
                 f"DECODE-FIRST   long TTFT {median(decode_first, 'newcomer_ttft_seconds')}s"
                 f" ({median(decode_first, 'newcomer_ttft_ratio_vs_solo')}x solo)"
-                f"  •  incumbent stall {median(decode_first, 'incumbent_max_arrival_window_gap_seconds')}s"
+                f"  •  ending-window gap {median(decode_first, 'incumbent_max_arrival_window_gap_seconds')}s"
                 f"  •  {decode_first['valid_rounds']}/{decode_first['total_rounds']} valid"
             ),
             line(
@@ -198,6 +198,18 @@ def render(result: dict[str, Any], fingerprint: str) -> str:
                 f"  •  long TTFT {median(prefill_first, 'long_ttft_ratio_vs_solo')}x solo"
                 f"  •  {prefill_first['valid_rounds']}/{prefill_first['total_rounds']} valid"
             ),
+        ))
+    if staggered_levels and settings.get("staggered_metrics_version", 1) >= 2:
+        rounds = decode_first['rounds']
+        live = sum(r['evidence']['all_incumbents_output_live'] for r in rounds)
+        gaps = [w['max_intersecting_gap_seconds'] for r in rounds
+                for w in r['evidence']['incumbent_windows']
+                if w['max_intersecting_gap_seconds'] is not None]
+        worst = 'n/a' if not gaps else f'{max(gaps):.2f}s'
+        lines.extend((
+            line(f"DELIVERY EVIDENCE v2   all incumbents output-live {live}/{len(rounds)} rounds"),
+            line(f"WORST INTERSECTING GAP   {worst} • all rounds retained in JSON"),
+            line("Submitted load and client output overlap do not establish GPU-active concurrency."),
         ))
     lines.extend((
         section("RECEIPT"),

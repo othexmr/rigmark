@@ -26,6 +26,18 @@ class ReportTest(unittest.TestCase):
         self.assertIn("CAPPED CONCURRENT GENERATION", card)
         self.assertIn(fingerprint[:16], card)
 
+    def test_staggered_card_labels_submissions_and_crossing_gaps(self):
+        from test_staggered_evidence import fixture
+        settings, evidence = fixture()
+        result = json.loads(json.dumps(self.result))
+        result['settings'].update(settings, staggered_incumbent_tokens=64, staggered_arrival_tokens=64)
+        result.update(evidence)
+        card = report.render(result, '0'*64)
+        self.assertIn('2 SUBMITTED REQUESTS', card)
+        self.assertIn('WORST INTERSECTING GAP', card)
+        self.assertNotIn('1 RUNNING', card)
+        self.assertTrue(all(len(line) == report.WIDTH for line in card.splitlines()))
+
     def test_depth_label_does_not_round_down(self):
         self.assertEqual("512 TOKENS", report.depth_label(512))
         self.assertEqual("64K", report.depth_label(65_536))

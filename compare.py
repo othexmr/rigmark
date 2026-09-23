@@ -394,7 +394,7 @@ def main() -> None:
                 ("staggered", str(level), "decode_first", "newcomer_ttft_ratio_vs_solo"),
             ),
             (
-                f"S{level} decode-first: incumbent stall at arrival, seconds ↓",
+                f"S{level} decode-first: incumbent ending-window gap, seconds ↓",
                 ("staggered", str(level), "decode_first", "incumbent_max_arrival_window_gap_seconds"),
             ),
             (
@@ -435,6 +435,24 @@ def main() -> None:
             f"| {label} | {format_summary(lhs, precision)} | "
             f"{format_summary(rhs, precision)} | {ratio_text} |"
         )
+
+    for arm, result in ((left_label, left), (right_label, right)):
+        if result.get('settings', {}).get('staggered_metrics_version', 1) < 2:
+            continue
+        print(f"\n{arm}: staggered delivery evidence, every round (seconds)")
+        print("| Level | Direction | Round | Overlap valid | TTFT max | Intersecting gap max | Output-live incumbents |")
+        print("|---|---|---:|---|---:|---:|---:|")
+        for level in result.get('settings', {}).get('staggered', []):
+            for direction in ('decode_first', 'prefill_first'):
+                for row in result['staggered'][str(level)][direction]['rounds']:
+                    evidence = row['evidence']
+                    gaps = [w['max_intersecting_gap_seconds'] for w in evidence.get('incumbent_windows', [])
+                            if w['max_intersecting_gap_seconds'] is not None]
+                    gap = f'{max(gaps):.3f}' if gaps else '—'
+                    ttft = row.get('newcomer_ttft_seconds') if direction == 'decode_first' else row.get('newcomer_max_ttft_seconds')
+                    ttft = f'{ttft:.3f}' if ttft is not None else '—'
+                    live = evidence.get('incumbents_with_output_after_arrival', '—')
+                    print(f"| {level} | {direction} | {row['round']} | {row['overlap_valid']} | {ttft} | {gap} | {live} |")
 
     print("\n| Basic output gate | " + left_label + " | " + right_label + " |")
     print("|---|---:|---:|")
