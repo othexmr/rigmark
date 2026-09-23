@@ -49,6 +49,10 @@ Operating-system DNS resolution and connection address attempts can take longer;
 resolve endpoint connectivity before a timed campaign. `--max-dispatch-lag` (default 0.05 s)
 is a client scheduling validity bound, not a server latency target.
 
+`--delivery-tokens usage|ids` adds exact completion-token delivery accounting to every request (see
+[token delivery accounting](token-delivery.md)). Run both arms of a comparison with the same mode; the reader refuses
+mixed modes.
+
 Optional SLO scoring requires all three second-valued flags:
 `--slo-visible`, `--slo-gap`, `--slo-total`. Goodput includes only completed
 requests meeting every threshold, with all planned requests in the denominator.
@@ -71,12 +75,41 @@ trace, runner, request settings, deadline and client/SLO bounds. Models and
 identity may differ for an explicitly labelled appliance comparison. Actual
 answers and therefore follow-up context can differ.
 
+## Arrival-rate sweep (open loop)
+
+```sh
+./rigmark prepare-replay --code CODE --document DOC --context CTX1 --context CTX2 \
+  --direction open-loop --rate 0.2 --duration 120 --seed 1 --output rate-0.2.json
+./rigmark replay-sweep --code CODE --document DOC --context CTX1 --context CTX2 \
+  --rates 0.05,0.1,0.2,0.4 --duration 120 --seed 1 --base-url http://SERVER:8000 \
+  --model MODEL --identity metadata.json --output results/sweep-1 \
+  --slo-visible 10 --slo-gap 2 --slo-total 120 --target 0.9
+```
+
+Open-loop traces are single-turn arrivals from a seeded Poisson process. One unit-rate exponential sequence is
+scaled by 1 / rate, so every rate replays the same prompts in the same order with only the clock compressed.
+`--long-every N` makes every Nth arrival the long-context review (0 = none). The bounded client caps a trace at 128
+arrivals; lower rate x duration if it refuses.
+
+`replay-sweep` runs the rates in ascending order, each as an ordinary replay receipt under `rate-R/`, which
+`compare-replay` can re-verify. It writes `sweep.json` with, per rate:
+- completion;
+- SLO attainment over all planned requests;
+- goodput;
+- visible-TTFT median and p95;
+- client schedule validity.
+
+`max_rate_meeting_target_per_s` is the highest rate whose attainment reaches `--target`, with every lower rate also
+reaching it. A non-monotone curve is flagged (`monotone: false`), not smoothed. SLO thresholds are required. The
+sweep stops after a rate whose completion fraction falls below `--stop-below` (default 0.5) and never retries.
+
 ## Receipt files
 
 - `manifest.json`, `trace.json`, `identity.json`: exact inputs and protocol settings.
 - `request-*.json`: each planned turn, actual clocks, output, usage and status.
 - `score.json`: overall and category summaries with achieved overlap.
-- `terminal.json`: completion/failure and client validity, without automatic retry.
+- `terminal.json`: completion/failure, client validity and client CPU seconds, without automatic retry.
+- `sweep.json` (sweep only): the per-rate table and the monotone capacity estimate.
 
 CPU and loopback tests qualify the collector logic only. They do not qualify its
 compatibility or measurement overhead on a particular inference server.

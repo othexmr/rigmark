@@ -27,4 +27,4 @@ jobs:
       - name: Test
         run: |
           python3 -m unittest discover -s tests -v
-          python3 -m py_compile audit_code.py bench.py compare.py configure.py receipt.py report.py rigmark staggered_metrics.py token_timeline.py replay.py replay_prepare.py replay_compare.py
+          python3 -m py_compile audit_code.py bench.py compare.py configure.py receipt.py report.py rigmark staggered_metrics.py token_timeline.py replay.py replay_prepare.py replay_compare.py replay_sweep.py

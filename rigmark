@@ -17,6 +17,7 @@ COMMANDS = {
     "replay": "replay.py",
     "prepare-replay": "replay_prepare.py",
     "compare-replay": "replay_compare.py",
+    "replay-sweep": "replay_sweep.py",
 }
 
 
