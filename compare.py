@@ -57,6 +57,13 @@ def comparable(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
         ("settings", "concurrency_runs"),
         ("settings", "concurrency_tokens"),
         ("settings", "concurrency_workload"),
+        ("settings", "staggered"),
+        ("settings", "staggered_runs"),
+        ("settings", "staggered_depth"),
+        ("settings", "staggered_incumbent_tokens"),
+        ("settings", "staggered_arrival_tokens"),
+        ("settings", "staggered_delay_seconds"),
+        ("settings", "staggered_workload"),
     )
     mismatches = [f"left receipt: {error}" for error in validate_result(left)]
     mismatches.extend(f"right receipt: {error}" for error in validate_result(right))
@@ -361,12 +368,48 @@ def main() -> None:
             ),
         ))
 
+    for level in left.get("settings", {}).get("staggered", []) or []:
+        metrics.extend((
+            (
+                f"S{level} decode-first: arriving long TTFT, seconds ↓",
+                ("staggered", str(level), "decode_first", "newcomer_ttft_seconds"),
+            ),
+            (
+                f"S{level} decode-first: arriving long TTFT vs solo, ratio ↓",
+                ("staggered", str(level), "decode_first", "newcomer_ttft_ratio_vs_solo"),
+            ),
+            (
+                f"S{level} decode-first: incumbent stall at arrival, seconds ↓",
+                ("staggered", str(level), "decode_first", "incumbent_max_arrival_window_gap_seconds"),
+            ),
+            (
+                f"S{level} decode-first: incumbent whole-stream p95 gap, seconds ↓",
+                ("staggered", str(level), "decode_first", "incumbent_max_p95_gap_seconds"),
+            ),
+            (
+                f"S{level} decode-first: incumbent decode, tok/s",
+                ("staggered", str(level), "decode_first", "incumbent_median_decode_tokens_per_second"),
+            ),
+            (
+                f"S{level} prefill-first: arriving short TTFT, seconds ↓",
+                ("staggered", str(level), "prefill_first", "newcomer_median_ttft_seconds"),
+            ),
+            (
+                f"S{level} prefill-first: arriving short TTFT vs solo, ratio ↓",
+                ("staggered", str(level), "prefill_first", "newcomer_ttft_ratio_vs_solo"),
+            ),
+            (
+                f"S{level} prefill-first: long TTFT vs solo, ratio ↓",
+                ("staggered", str(level), "prefill_first", "long_ttft_ratio_vs_solo"),
+            ),
+        ))
+
     print(f"| Measurement | {left_label} | {right_label} | Right/left |")
     print("|---|---:|---:|---:|")
     for label, path in metrics:
         lhs = summary(left, path)
         rhs = summary(right, path)
-        precision = 3 if "seconds" in label else 1
+        precision = 3 if "seconds" in label else (2 if "ratio" in label else 1)
         ratio = (
             None
             if lhs is None or rhs is None or lhs["median"] == 0

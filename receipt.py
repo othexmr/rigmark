@@ -294,6 +294,8 @@ def validate_result(result: Any) -> list[str]:
         ):
             errors.append(f"{path}.completion_gate does not match raw outputs")
 
+    check_staggered(errors, settings, result, require_v11)
+
     depths = settings.get("prefill_depths", [])
     prefill = result.get("prefill", {})
     if not isinstance(depths, list) or not isinstance(prefill, dict):
@@ -448,3 +450,69 @@ def validate_result(result: Any) -> list[str]:
         check_summary(errors, value, "per_stream_ttft_seconds", streams,
                       "ttft_seconds", path)
     return errors
+
+
+def check_staggered(
+    errors: list[str], settings: dict[str, Any], result: dict[str, Any],
+    require_v11: bool,
+) -> None:
+    """Validate the optional staggered-arrival section (protocol 1.1.0 extension)."""
+    levels = settings.get("staggered", [])
+    if levels in (None, []):
+        return
+    staggered = result.get("staggered")
+    rounds_expected = settings.get("staggered_runs")
+    if not isinstance(levels, list) or not isinstance(staggered, dict):
+        errors.append("staggered settings or results are malformed")
+        return
+    if not is_int(rounds_expected) or rounds_expected < 1:
+        errors.append("settings.staggered_runs must be a positive integer")
+        return
+    depth = settings.get("staggered_depth")
+    if not is_int(depth) or depth < 1:
+        errors.append("settings.staggered_depth must be a positive integer")
+    for level in levels:
+        path = f"staggered.{level}"
+        value = staggered.get(str(level))
+        if not is_int(level) or level < 2 or not isinstance(value, dict):
+            errors.append(f"{path} is missing or malformed")
+            continue
+        for direction, single, many in (
+            ("decode_first", "newcomer", "incumbents"),
+            ("prefill_first", "incumbent", "newcomers"),
+        ):
+            owner = value.get(direction)
+            rows = owner.get("rounds") if isinstance(owner, dict) else None
+            if not isinstance(rows, list):
+                errors.append(f"{path}.{direction}.rounds is missing")
+                continue
+            if len(rows) != rounds_expected:
+                errors.append(f"{path}.{direction}.rounds has the wrong length")
+            valid = 0
+            for index, row in enumerate(rows, start=1):
+                row_path = f"{path}.{direction}.rounds[{index}]"
+                if not isinstance(row, dict) or not isinstance(row.get("overlap_valid"), bool):
+                    errors.append(f"{row_path}.overlap_valid must be a boolean")
+                    continue
+                valid += row["overlap_valid"]
+                check_stream_row(errors, row.get("solo"), f"{row_path}.solo", require_v11)
+                check_stream_row(errors, row.get(single), f"{row_path}.{single}", require_v11)
+                streams = row.get(many)
+                if not isinstance(streams, list) or (
+                    row["overlap_valid"] and len(streams) != level - 1
+                ):
+                    errors.append(f"{row_path}.{many} must list {level - 1} streams")
+                    continue
+                for stream_index, stream in enumerate(streams, start=1):
+                    check_stream_row(
+                        errors, stream, f"{row_path}.{many}[{stream_index}]", require_v11,
+                    )
+                    if isinstance(stream, dict) and not isinstance(
+                        stream.get("event_seconds"), list
+                    ):
+                        errors.append(f"{row_path}.{many}[{stream_index}].event_seconds is required")
+                long_row = row.get(single)
+                if isinstance(long_row, dict) and long_row.get("prompt_tokens") != depth:
+                    errors.append(f"{row_path}.{single}.prompt_tokens does not match staggered depth")
+            if owner.get("valid_rounds") != valid or owner.get("total_rounds") != len(rows):
+                errors.append(f"{path}.{direction} valid/total round counts do not match rows")

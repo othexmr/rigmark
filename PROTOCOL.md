@@ -12,7 +12,8 @@ Two runs are directly comparable only when all of these match:
 - benchmark protocol version, prompt-corpus SHA256, and comparison ID;
 - run counts, output limits, sampling fields, and extra request body;
 - cache-busting/immediate-replay prefill depths and run count;
-- concurrency levels, rounds, workload, and output limit; and
+- concurrency levels, rounds, workload, and output limit;
+- staggered-arrival levels, rounds, depth, caps, delay, and workload; and
 - the server-side definition of a prompt and completion token.
 
 For a topology-only claim, model weights, immutable model and drafter
@@ -95,6 +96,38 @@ Each receives a unique nonce. Reports include aggregate end-to-end throughput,
 per-stream decode, and per-stream TTFT. Aggregate throughput includes prefill
 and scheduling delay and therefore describes service capacity rather than the
 decode kernel alone.
+
+## Staggered arrivals (optional)
+
+The barrier concurrency suite starts every request at once, so it never shows
+what happens when a request arrives while others are already being served: a
+long prompt admitted into a running decode batch, or short requests queued
+behind a long prefill. `--staggered LEVELS` adds that measurement. Each level is
+a total concurrency of running plus arriving requests, and each round measures
+both directions:
+
+- **decode-first**: `LEVEL-1` short chat streams (the staggered workload, capped
+  by `--staggered-incumbent-tokens`) are started on a barrier. After every one
+  of them has produced its first output and `--staggered-delay` seconds have
+  passed, one exact-token long request of `--staggered-depth` prompt tokens
+  arrives (capped by `--staggered-arrival-tokens`). Reported: the arriving
+  request's TTFT and its ratio to a solo run of the same depth performed just
+  before (a different cache-busting nonce), and the incumbents' delivery stalls:
+  the whole-stream p95 interval between SSE events, plus the largest interval
+  that ends between the arrival and its first output.
+- **prefill-first**: the long request starts alone; after `--staggered-delay`
+  seconds, and only if it has not produced output yet, `LEVEL-1` short chat
+  requests arrive on a barrier. Reported: the short requests' median and maximum
+  TTFT and the ratio to a solo short request, and how much the long request's
+  TTFT grew against its solo value.
+
+A round is valid only when the overlap really happened: every incumbent was
+still streaming when the long request started, or every short request started
+before the long request's first output. Invalid rounds are kept in the receipt
+and excluded from the summaries; the card prints the valid/total count. The
+prefill depth must satisfy the same context-limit rule as the prefill suite.
+The suite is off unless `--staggered` is given, and its settings are part of
+the comparability rules.
 
 ## Publishing a result
 

@@ -61,7 +61,19 @@ class CompareTest(unittest.TestCase):
 
     def test_identical_clean_receipts_are_comparable(self):
         result = json.loads(json.dumps(self.result))
+        # The reference predates staggered settings; complete this test's
+        # current-protocol receipt without changing the archived fixture.
+        result["settings"].update({
+            "staggered": [], "staggered_runs": 1, "staggered_depth": 32768,
+            "staggered_incumbent_tokens": 2048, "staggered_arrival_tokens": 256,
+            "staggered_delay_seconds": 2.0, "staggered_workload": "prose",
+        })
         self.assertEqual([], compare.comparable(result, result))
+
+    def test_legacy_receipt_without_staggered_settings_is_rejected(self):
+        mismatches = compare.comparable(self.result, self.result)
+        self.assertIn("settings.staggered", mismatches)
+        self.assertIn("settings.staggered_depth", mismatches)
 
     def test_dirty_receipts_require_matching_worktree_hash(self):
         left = json.loads(json.dumps(self.result))

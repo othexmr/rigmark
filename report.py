@@ -168,6 +168,37 @@ def render(result: dict[str, Any], fingerprint: str) -> str:
                 f"  •  visible {visible}/{len(streams)}  •  reasoning may be included"
             ),
         ))
+    staggered_levels = settings.get("staggered", []) or []
+    if staggered_levels:
+        level_value = max(staggered_levels)
+        data = result["staggered"][str(level_value)]
+        decode_first = data["decode_first"]
+        prefill_first = data["prefill_first"]
+
+        def median(owner: dict[str, Any], key: str) -> str:
+            value = owner.get(key)
+            return "n/a" if not value else f"{value['median']:.2f}"
+
+        lines.extend((
+            section("STAGGERED ARRIVALS"),
+            line(
+                f"S{level_value} • {level_value - 1} RUNNING + 1 ARRIVING • "
+                f"{settings['staggered_depth']:,}-TOKEN LONG REQUEST • "
+                f"{settings['staggered_incumbent_tokens']}/{settings['staggered_arrival_tokens']}-TOKEN CAPS"
+            ),
+            line(
+                f"DECODE-FIRST   long TTFT {median(decode_first, 'newcomer_ttft_seconds')}s"
+                f" ({median(decode_first, 'newcomer_ttft_ratio_vs_solo')}x solo)"
+                f"  •  incumbent stall {median(decode_first, 'incumbent_max_arrival_window_gap_seconds')}s"
+                f"  •  {decode_first['valid_rounds']}/{decode_first['total_rounds']} valid"
+            ),
+            line(
+                f"PREFILL-FIRST  short TTFT {median(prefill_first, 'newcomer_median_ttft_seconds')}s"
+                f" ({median(prefill_first, 'newcomer_ttft_ratio_vs_solo')}x solo)"
+                f"  •  long TTFT {median(prefill_first, 'long_ttft_ratio_vs_solo')}x solo"
+                f"  •  {prefill_first['valid_rounds']}/{prefill_first['total_rounds']} valid"
+            ),
+        ))
     lines.extend((
         section("RECEIPT"),
         line(f"JSON       sha256:{fingerprint[:16]}…"),
