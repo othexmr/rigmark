@@ -44,11 +44,11 @@
       "start_s": 0.5,
       "turns": [
         {
-          "user": "Write the string 'switchless' reversed, letter by letter.",
+          "user": "Reverse the order of these words: north east south west",
           "max_tokens": 2048,
           "think_s": 0,
           "contains_all": [
-            "ANSWER: sselhctiws"
+            "ANSWER: west south east north"
           ]
         }
       ]
@@ -194,7 +194,7 @@
       "start_s": 3.0,
       "turns": [
         {
-          "user": "How many seconds are in 2.5 hours? Give digits only, without separators.",
+          "user": "How many seconds are in 2.5 hours? In the ANSWER line, write the number as plain digits without separators.",
           "max_tokens": 2048,
           "think_s": 0,
           "contains_all": [

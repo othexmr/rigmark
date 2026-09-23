@@ -17,6 +17,23 @@ class QualitySet(unittest.TestCase):
             self.assertEqual(len(turn['contains_all']), 1)
             self.assertTrue(turn['contains_all'][0].startswith('ANSWER: '))
 
+    def test_expected_answers_rederived(self):
+        """Every expected answer is recomputed here; an edited task or answer has to keep these in step."""
+        def fib(n):
+            a, b = 0, 1
+            for _ in range(n):
+                a, b = b, a + b
+            return a
+        derived = {'q01': 37 * 23, 'q02': sum(i * i for i in range(1, 11)),
+                   'q03': ' '.join(reversed('north east south west'.split())), 'q04': int('2A', 16),
+                   'q05': __import__('calendar').monthrange(2024, 2)[1], 'q06': (13 * 60 + 15) - (9 * 60 + 40),
+                   'q07': 12345 % 97, 'q08': 'strawberry'.count('r'), 'q09': 20 + 30, 'q10': fib(10),
+                   'q11': int('101101', 2), 'q12': len(set('mississippi')), 'q13': int(2.5 * 3600), 'q14': fib(12),
+                   'q15': len('the quick brown fox jumps over the lazy dog'.split()), 'q16': sum(map(int, '98765'))}
+        trace = json.loads((Path(R.__file__).parent / 'examples/replay/quality-16.json').read_text())
+        self.assertEqual({s['id']: s['turns'][0]['contains_all'][0] for s in trace['sessions']},
+                         {k: f'ANSWER: {v}' for k, v in derived.items()})
+
     def test_pass_fraction_counts_every_planned_request_with_checks(self):
         rows = [{'id': 'a:0', 'status': 'completed', 'started_s': 0, 'finished_s': 1, 'declared_content_checks': 1,
                  'declared_content_checks_pass': True, 'usage_valid': False},

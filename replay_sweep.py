@@ -78,12 +78,19 @@ def main():
     ap.add_argument('--target', type=float, default=0.9, help='SLO attainment target over all planned requests')
     ap.add_argument('--stop-below', type=float, default=0.5, help='stop after a rate whose completion fraction is lower')
     ap.add_argument('--max-dispatch-lag', type=float, default=0.05)
+    P.add_budget_arguments(ap)
     a = ap.parse_args()
     rates = [float(x) for x in a.rates.split(',') if x.strip()]
     if not rates or rates != sorted(rates) or len(set(rates)) != len(rates) or any(not (math.isfinite(r) and r > 0) for r in rates):
         ap.error('rates must be distinct, positive and ascending')
     if not 0 < a.target <= 1 or not 0 <= a.stop_below <= 1:
         ap.error('target in (0, 1], stop-below in [0, 1]')
+    if a.followup_max_tokens is not None:
+        ap.error('open-loop arrivals are single-turn; --followup-max-tokens does not apply')
+    try:
+        output_budgets = P.budgets(a.max_tokens, a.long_max_tokens)
+    except ValueError as error:
+        ap.error(str(error))
     extra = json.loads(a.extra_body)
     if not isinstance(extra, dict) or set(extra) - {'chat_template_kwargs'}:
         ap.error('only chat_template_kwargs allowed')
@@ -97,7 +104,8 @@ def main():
     for rate in rates:
         label = f'rate-{rate:g}'
         run = a.output / label
-        trace = P.prepare_open_loop(a.code, a.document, a.context, rate, a.duration, a.seed, a.long_every, a.cache_policy)
+        trace = P.prepare_open_loop(a.code, a.document, a.context, rate, a.duration, a.seed, a.long_every, a.cache_policy,
+                                    output_budgets)
         raw = (json.dumps(trace, indent=2, allow_nan=False) + '\n').encode()
         run.mkdir()
         (run / 'trace.json').write_bytes(raw); (run / 'identity.json').write_bytes(identity_raw)

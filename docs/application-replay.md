@@ -23,6 +23,20 @@ input text and provenance are retained. Directions are `short-first`,
 `long-first`, and `sessions`. Context is never padded to claim a token depth;
 server usage reports actual token counts where available.
 
+**Output budgets.** Each turn's `max_tokens` comes from the trace. The defaults are:
+- 1,024 for a first turn;
+- 1,536 for the long-context review;
+- 768 for a follow-up.
+
+A reasoning model can spend such a budget on reasoning alone. The request then ends with `finish_reason: length`,
+is recorded as `truncated`, and counts against completion and SLO attainment. On GLM-5.3 at `reasoning_effort: low`,
+10 of 12 first turns in one validation run were truncated. Six of them spent the whole budget on reasoning and
+returned no visible text.
+
+For such models, declare larger budgets with `--max-tokens`, `--long-max-tokens` and `--followup-max-tokens`
+(16 to 16,384). `replay-sweep` accepts the first two. The trace records its budgets under
+`provenance.output_budgets`. Budgets are part of the workload: compare only runs prepared with the same budgets.
+
 ## Execute and compare
 
 ```sh
@@ -64,7 +78,16 @@ aggregate scores.
 
 `examples/replay/quality-16.json` is a small **quality sanity set**, not an accuracy benchmark. It has 16
 deterministic-answer tasks (arithmetic, code tracing, conversions, counting), each checked for one exact
-`ANSWER: <value>` line; the answers were re-derived programmatically. `score.json` reports
+`ANSWER: <value>` line. `tests/test_replay_quality.py` re-derives every expected answer in Python.
+
+Two tasks were revised after the first real-server run:
+- q03 reversed a word letter by letter. That failed once in three runs on a healthy server (a tokenization
+  artefact), so it now reverses a word order.
+- q13 asked for "digits only". That conflicted with the ANSWER line, and the model once replied with the bare
+  number, so the prompt now says the digits go in the ANSWER line.
+
+The letter-count task q08 is the next candidate for the same artefact. A single miss in one run is therefore weak
+evidence; misses that repeat across matched runs are what the set exists to catch. `score.json` reports
 `content_checks_pass_fraction` over every planned request that declares checks, counting blocked and failed
 requests as misses. Its purpose is to catch gross output breakage between matched runs, for example a numerics or
 synchronisation bug that still produces fluent text. A failed check marks the request `invalid_answer`, so the run

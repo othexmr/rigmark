@@ -18,6 +18,20 @@ FOLLOWUPS = [
     'Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.',
     'Turn that into a concise handoff with the next action and its acceptance criteria.',
 ]
+# Output budgets (max_tokens) per turn kind. The defaults are the original trace budgets. A reasoning model can spend a
+# 1,024-token budget on reasoning alone and return no visible answer (status 'truncated'), so a replay of such a model
+# declares larger budgets explicitly. The trace records the budgets it was prepared with.
+DEFAULT_BUDGETS = {'initial': 1024, 'long': 1536, 'followup': 768}
+
+
+def budgets(initial=None, long=None, followup=None):
+    b = dict(DEFAULT_BUDGETS)
+    for key, value in (('initial', initial), ('long', long), ('followup', followup)):
+        if value is not None:
+            if type(value) is not int or not 16 <= value <= 16384:
+                raise ValueError(f'{key} output budget must be an integer in [16, 16384]')
+            b[key] = value
+    return b
 
 
 def material(paths):
@@ -30,8 +44,9 @@ def material(paths):
     return '\n\n'.join(texts), provenance
 
 
-def prepare(code, document, contexts, users, direction, delay, cache):
+def prepare(code, document, contexts, users, direction, delay, cache, output_budgets=None):
     c, pc=material([code]); d,pd=material([document]); long,pl=material(contexts)
+    b=output_budgets or budgets()
     sessions=[]
     for i in range(users):
         is_long = i == users-1
@@ -45,13 +60,14 @@ def prepare(code, document, contexts, users, direction, delay, cache):
         if direction=='long-first': start=0 if is_long else delay
         elif direction=='short-first': start=delay if is_long else 0
         else: start=[0,0.35,1.2,1.25,3.0,4.5][i%6]+(i//6)*5.0
-        turns=[{'user':user,'max_tokens':1536 if is_long else 1024,'think_s':0}]
+        turns=[{'user':user,'max_tokens':b['long'] if is_long else b['initial'],'think_s':0}]
         if direction=='sessions':
-            turns += [{'user':q,'max_tokens':768,'think_s':float(2+(i+j)%5)} for j,q in enumerate(FOLLOWUPS)]
+            turns += [{'user':q,'max_tokens':b['followup'],'think_s':float(2+(i+j)%5)} for j,q in enumerate(FOLLOWUPS)]
         sessions.append({'id':f'user-{i+1:02d}','start_s':start,'category':category,'turns':turns})
     return validate({'protocol':PROTOCOL,'label':f'{direction}-{users}-users',
         'provenance':{'kind':'authored_application_scenario_not_production_trace',
-                      'inputs':pc+pd+pl,'padding':'none','token_lengths':'measured from server usage, not assumed'},
+                      'inputs':pc+pd+pl,'padding':'none','token_lengths':'measured from server usage, not assumed',
+                      'output_budgets':b},
         'cache_policy':cache,'system':'Help an engineer solve the task using only the supplied material. Be precise and concise. Admit missing evidence.',
         'sessions':sessions})
 
@@ -74,9 +90,10 @@ def open_loop_starts(rate, duration, seed):
             raise ValueError('more than 128 arrivals; lower rate x duration (bounded client)')
 
 
-def prepare_open_loop(code, document, contexts, rate, duration, seed, long_every, cache):
+def prepare_open_loop(code, document, contexts, rate, duration, seed, long_every, cache, output_budgets=None):
     """Single-turn arrivals at a seeded Poisson rate; every long_every-th arrival is the long-context review."""
     c, pc=material([code]); d,pd=material([document]); long,pl=material(contexts)
+    b=output_budgets or budgets()
     if type(long_every) is not int or long_every < 0:
         raise ValueError('long_every must be a nonnegative integer')
     sessions=[]
@@ -88,16 +105,22 @@ def prepare_open_loop(code, document, contexts, rate, duration, seed, long_every
             question='Review the complete material. Identify cross-file correctness risks, cite the relevant file names, then prioritize three actionable fixes. Do not repeat the material.'
         content=long if is_long else c if category=='code' else d
         sessions.append({'id':f'arrival-{i+1:03d}','start_s':start,'category':category,
-                         'turns':[{'user':content+'\n\nTask:\n'+question,'max_tokens':1536 if is_long else 1024,'think_s':0}]})
+                         'turns':[{'user':content+'\n\nTask:\n'+question,'max_tokens':b['long'] if is_long else b['initial'],'think_s':0}]})
     if not sessions:
         raise ValueError('no arrivals in the window; raise rate x duration')
     return validate({'protocol':PROTOCOL,'label':f'open-loop-{rate:g}rps-{duration:g}s-seed{seed}',
         'provenance':{'kind':'authored_application_scenario_not_production_trace','inputs':pc+pd+pl,'padding':'none',
                       'arrivals':{'process':'poisson','rate_per_s':rate,'duration_s':duration,'seed':seed,
                                   'long_every':long_every},
-                      'token_lengths':'measured from server usage, not assumed'},
+                      'token_lengths':'measured from server usage, not assumed','output_budgets':{'initial':b['initial'],'long':b['long']}},
         'cache_policy':cache,'system':'Help an engineer solve the task using only the supplied material. Be precise and concise. Admit missing evidence.',
         'sessions':sessions})
+
+
+def add_budget_arguments(p):
+    p.add_argument('--max-tokens',type=int,help=f"output budget of each first turn (default {DEFAULT_BUDGETS['initial']})")
+    p.add_argument('--long-max-tokens',type=int,help=f"output budget of the long-context review (default {DEFAULT_BUDGETS['long']})")
+    p.add_argument('--followup-max-tokens',type=int,help=f"output budget of each follow-up turn (default {DEFAULT_BUDGETS['followup']})")
 
 
 def main():
@@ -114,13 +137,16 @@ def main():
     p.add_argument('--delay',type=float,default=1)
     p.add_argument('--cache-policy',choices=('natural','run-isolated'),default='run-isolated')
     p.add_argument('--output',type=Path,required=True)
+    add_budget_arguments(p)
     a=p.parse_args()
+    try: b=budgets(a.max_tokens,a.long_max_tokens,a.followup_max_tokens)
+    except ValueError as error: p.error(str(error))
     if a.direction=='open-loop':
         if a.rate is None: p.error('open-loop needs --rate')
-        result=prepare_open_loop(a.code,a.document,a.context,a.rate,a.duration,a.seed,a.long_every,a.cache_policy)
+        result=prepare_open_loop(a.code,a.document,a.context,a.rate,a.duration,a.seed,a.long_every,a.cache_policy,b)
     else:
         if not 2 <= a.users <= 128: p.error('users must be 2..128')
-        result=prepare(a.code,a.document,a.context,a.users,a.direction,a.delay,a.cache_policy)
+        result=prepare(a.code,a.document,a.context,a.users,a.direction,a.delay,a.cache_policy,b)
     with a.output.open('x') as f: f.write(json.dumps(result,indent=2,allow_nan=False)+'\n')
     print(json.dumps({'status':'PREPARED_NO_REQUESTS','output':str(a.output),'sessions':len(result['sessions']),
                       'sha256':hashlib.sha256(a.output.read_bytes()).hexdigest()}))
