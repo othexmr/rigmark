@@ -96,7 +96,9 @@ aggregate scores.
 
 `examples/replay/quality-16.json` is a small **quality sanity set**, not an accuracy benchmark. It has 16
 deterministic-answer tasks (arithmetic, code tracing, conversions, counting), each checked for one exact
-`ANSWER: <value>` line. `tests/test_replay_quality.py` re-derives every expected answer in Python.
+`ANSWER: <value>` final line using the optional `exact_answer` turn field. Leading/trailing whitespace
+is ignored; duplicate or conflicting `ANSWER:` markers and answer suffixes fail. Generic `contains_all`
+checks retain their substring semantics. Both kinds count toward declared checks. `tests/test_replay_quality.py` re-derives every expected answer in Python.
 
 Two tasks were revised after the first real-server run:
 - q03 reversed a word letter by letter. That failed once in three runs on a healthy server (a tokenization
@@ -106,8 +108,8 @@ Two tasks were revised after the first real-server run:
 
 The letter-count task q08 is the next candidate for the same artefact. A single miss in one run is therefore weak
 evidence; misses that repeat across matched runs are what the set exists to catch. `score.json` reports
-`content_checks_pass_fraction` over every planned request that declares checks, counting blocked and failed
-requests as misses. Its purpose is to catch gross output breakage between matched runs, for example a numerics or
+`content_checks_pass_fraction` over every planned request that declares checks, counting blocked, failed and truncated
+requests as misses even if their partial text contains the expected answer. Its purpose is to catch gross output breakage between matched runs, for example a numerics or
 synchronisation bug that still produces fluent text. A failed check marks the request `invalid_answer`, so the run
 exits with status 2 (`COMPLETED_WITH_FAILURES_NO_RETRY`); that is expected for a sanity set.
 

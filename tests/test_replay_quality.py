@@ -14,8 +14,8 @@ class QualitySet(unittest.TestCase):
         self.assertEqual(len(trace['sessions']), 16)
         for s in trace['sessions']:
             (turn,) = s['turns']
-            self.assertEqual(len(turn['contains_all']), 1)
-            self.assertTrue(turn['contains_all'][0].startswith('ANSWER: '))
+            self.assertEqual(R.declared_check_count(turn), 1)
+            self.assertIsInstance(turn['exact_answer'], str)
 
     def test_expected_answers_rederived(self):
         """Every expected answer is recomputed here; an edited task or answer has to keep these in step."""
@@ -31,8 +31,8 @@ class QualitySet(unittest.TestCase):
                    'q11': int('101101', 2), 'q12': len(set('mississippi')), 'q13': int(2.5 * 3600), 'q14': fib(12),
                    'q15': len('the quick brown fox jumps over the lazy dog'.split()), 'q16': sum(map(int, '98765'))}
         trace = json.loads((Path(R.__file__).parent / 'examples/replay/quality-16.json').read_text())
-        self.assertEqual({s['id']: s['turns'][0]['contains_all'][0] for s in trace['sessions']},
-                         {k: f'ANSWER: {v}' for k, v in derived.items()})
+        self.assertEqual({s['id']: s['turns'][0]['exact_answer'] for s in trace['sessions']},
+                         {k: str(v) for k, v in derived.items()})
 
     def test_pass_fraction_counts_every_planned_request_with_checks(self):
         rows = [{'id': 'a:0', 'status': 'completed', 'started_s': 0, 'finished_s': 1, 'declared_content_checks': 1,
@@ -47,13 +47,49 @@ class QualitySet(unittest.TestCase):
         self.assertAlmostEqual(s['content_checks_pass_fraction'], 1 / 3)
         self.assertIsNone(R.score(rows[3:])['content_checks_pass_fraction'])
 
+    def test_exact_final_answer_rejects_substrings_duplicates_and_conflicts(self):
+        for output in ('ANSWER: 8510', 'ANSWER: 851 followed by text',
+                       'ANSWER: 851\nANSWER: 851', 'ANSWER: 999\nANSWER: 851',
+                       'ANSWER: 851\nActually 999', '', 'Working... ANSWER: 851'):
+            with self.subTest(output=output):
+                status, checks = R.request_outcome(
+                    {'output': output, 'done': True, 'finish_reason': 'stop'}, {'exact_answer': '851'})
+                self.assertEqual(status, 'invalid_answer')
+                self.assertFalse(checks)
+        self.assertEqual(R.request_outcome(
+            {'output': 'Working...\nANSWER: 851\n', 'done': True, 'finish_reason': 'stop'},
+            {'exact_answer': '851'}), ('completed', True))
+        # Generic contains_all remains a substring contract.
+        self.assertEqual(R.request_outcome(
+            {'output': 'ANSWER: 8510', 'done': True, 'finish_reason': 'stop'},
+            {'contains_all': ['ANSWER: 851']}), ('completed', True))
+
+    def test_exact_answer_schema(self):
+        for value in (None, 851, '', ' 851', '851\n999', 'ANSWER: 851'):
+            trace = json.loads((Path(R.__file__).parent / 'examples/replay/quality-16.json').read_text())
+            trace['sessions'][0]['turns'][0]['exact_answer'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'exact_answer'):
+                R.validate(trace)
+
+    def test_correct_text_in_failed_or_truncated_requests_is_a_quality_miss(self):
+        rows = []
+        for fields in ({'error': 'timeout', 'done': False, 'finish_reason': None},
+                       {'done': True, 'finish_reason': 'length'},
+                       {'done': False, 'finish_reason': 'stop'}):
+            row = dict(fields, output='ANSWER: 851', started_s=0, finished_s=1,
+                       declared_content_checks=1)
+            row['status'], row['declared_content_checks_pass'] = R.request_outcome(row, {'exact_answer': '851'})
+            rows.append(row)
+        self.assertEqual(R.score(rows)['content_checks_pass_fraction'], 0)
+        self.assertEqual(R.score(rows)['completion_fraction'], 0)
+
 
 class FakeClient:
     def stream(self, messages, cap, extra):
         import time
         started = time.monotonic()
         state = R.StreamState()
-        answer = 'Working... ANSWER: 851' if '37 multiplied' in messages[-1]['content'] else 'ANSWER: wrong'
+        answer = 'Working...\nANSWER: 851' if '37 multiplied' in messages[-1]['content'] else 'ANSWER: wrong'
         state.observe(json.dumps({'choices': [{'index': 0, 'delta': {'content': answer}, 'finish_reason': 'stop'}],
                                   'usage': {'prompt_tokens': 5, 'completion_tokens': 4}}), .001)
         state.observe('[DONE]', .002)

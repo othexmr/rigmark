@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-from replay import PROTOCOL, digest, validate, summarise_run, request_outcome
+from replay import PROTOCOL, digest, validate, summarise_run, request_outcome, declared_check_count
 
 
 def validate_request_timing(row, due):
@@ -130,7 +130,7 @@ def load_run(path):
         failed = False
         for i, turn in enumerate(session['turns']):
             row = by_request[(session['id'], i)]
-            if row.get('declared_content_checks') != len(turn.get('contains_all', [])):
+            if row.get('declared_content_checks') != declared_check_count(turn):
                 raise ValueError('declared check count differs from the trace')
             if failed:
                 if row['status'] != 'blocked_by_previous_turn' or 'started_s' in row:

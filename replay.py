@@ -73,6 +73,11 @@ def validate(trace):
             checks = turn.get('contains_all', [])
             if not isinstance(checks, list) or not all(isinstance(v, str) and v for v in checks):
                 raise ValueError('invalid contains_all checks')
+            if 'exact_answer' in turn:
+                answer = turn['exact_answer']
+                if (not isinstance(answer, str) or not answer.strip() or answer != answer.strip()
+                        or len(answer.splitlines()) != 1 or 'ANSWER:' in answer):
+                    raise ValueError('invalid exact_answer check')
     if total > 2048:
         raise ValueError('trace too large for this bounded client')
     return trace
@@ -266,8 +271,16 @@ class Client:
         return row
 
 
+def declared_check_count(turn):
+    return len(turn.get('contains_all', [])) + int('exact_answer' in turn)
+
+
 def request_outcome(row, turn):
     checks = all(t in row.get('output', '') for t in turn.get('contains_all', []))
+    if 'exact_answer' in turn:
+        text = row.get('output', '').strip()
+        checks = (checks and text.count('ANSWER:') == 1
+                  and text.splitlines()[-1].strip() == 'ANSWER: ' + turn['exact_answer'])
     if row.get('error') or not row.get('done'):
         status = 'error'
     elif row.get('finish_reason') == 'length':
@@ -296,7 +309,7 @@ def execute(trace, client, output, run_id, extra_body=None):
         for index, turn in enumerate(s['turns']):
             row = {'id': f"{s['id']}:{index}", 'session': s['id'], 'turn': index,
                    'category': s['category'], 'max_tokens': turn['max_tokens'],
-                   'declared_content_checks': len(turn.get('contains_all', []))}
+                   'declared_content_checks': declared_check_count(turn)}
             if failed:
                 row.update(status='blocked_by_previous_turn', error={'type': 'DependencyFailure'})
             else:
@@ -430,7 +443,7 @@ def score(rows, slo=None):
             # Declared content checks (e.g. the quality sanity set): every planned request that declares checks is
             # in the denominator; blocked or failed requests count as misses.
             'content_checks_declared_requests': sum(bool(r.get('declared_content_checks')) for r in rows),
-            'content_checks_pass_fraction': (sum(r.get('declared_content_checks_pass') is True for r in rows
+            'content_checks_pass_fraction': (sum(r.get('status') == 'completed' and r.get('declared_content_checks_pass') is True for r in rows
                                                  if r.get('declared_content_checks')) /
                                              sum(bool(r.get('declared_content_checks')) for r in rows)
                                              if any(r.get('declared_content_checks') for r in rows) else None),

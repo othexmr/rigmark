@@ -17,9 +17,7 @@
           "user": "What is 37 multiplied by 23?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 851"
-          ]
+          "exact_answer": "851"
         }
       ]
     },
@@ -32,9 +30,7 @@
           "user": "What does this Python program print?\n```python\nprint(sum(i * i for i in range(1, 11)))\n```",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 385"
-          ]
+          "exact_answer": "385"
         }
       ]
     },
@@ -47,9 +43,7 @@
           "user": "Reverse the order of these words: north east south west",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: west south east north"
-          ]
+          "exact_answer": "west south east north"
         }
       ]
     },
@@ -62,9 +56,7 @@
           "user": "Convert the hexadecimal number 0x2A to decimal.",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 42"
-          ]
+          "exact_answer": "42"
         }
       ]
     },
@@ -77,9 +69,7 @@
           "user": "How many days does February have in a leap year?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 29"
-          ]
+          "exact_answer": "29"
         }
       ]
     },
@@ -92,9 +82,7 @@
           "user": "A train leaves at 09:40 and arrives at 13:15 the same day. How many minutes does the trip take?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 215"
-          ]
+          "exact_answer": "215"
         }
       ]
     },
@@ -107,9 +95,7 @@
           "user": "What is the remainder when 12345 is divided by 97?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 26"
-          ]
+          "exact_answer": "26"
         }
       ]
     },
@@ -122,9 +108,7 @@
           "user": "How many times does the letter r appear in the word 'strawberry'?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 3"
-          ]
+          "exact_answer": "3"
         }
       ]
     },
@@ -137,9 +121,7 @@
           "user": "Given the JSON {\"a\": {\"b\": [10, 20, 30]}}, what is a.b[1] + a.b[2]?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 50"
-          ]
+          "exact_answer": "50"
         }
       ]
     },
@@ -152,9 +134,7 @@
           "user": "With F(1) = 1 and F(2) = 1, what is the 10th Fibonacci number F(10)?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 55"
-          ]
+          "exact_answer": "55"
         }
       ]
     },
@@ -167,9 +147,7 @@
           "user": "Convert the binary number 101101 to decimal.",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 45"
-          ]
+          "exact_answer": "45"
         }
       ]
     },
@@ -182,9 +160,7 @@
           "user": "What does this Python expression evaluate to?\n```python\nlen(set('mississippi'))\n```",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 4"
-          ]
+          "exact_answer": "4"
         }
       ]
     },
@@ -197,9 +173,7 @@
           "user": "How many seconds are in 2.5 hours? In the ANSWER line, write the number as plain digits without separators.",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 9000"
-          ]
+          "exact_answer": "9000"
         }
       ]
     },
@@ -212,9 +186,7 @@
           "user": "What does this Python program print?\n```python\ndef f(n):\n    return n if n < 2 else f(n - 1) + f(n - 2)\nprint(f(12))\n```",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 144"
-          ]
+          "exact_answer": "144"
         }
       ]
     },
@@ -227,9 +199,7 @@
           "user": "How many words are in the sentence 'the quick brown fox jumps over the lazy dog'?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 9"
-          ]
+          "exact_answer": "9"
         }
       ]
     },
@@ -242,9 +212,7 @@
           "user": "What is the sum of the digits of 98765?",
           "max_tokens": 2048,
           "think_s": 0,
-          "contains_all": [
-            "ANSWER: 35"
-          ]
+          "exact_answer": "35"
         }
       ]
     }
