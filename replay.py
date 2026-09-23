@@ -15,7 +15,11 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+from token_timeline import TokenTimeline
+
 PROTOCOL = 'rigmark-application-replay.1'
+# Opt-in exact completion-token delivery, shared with bench.py's staggered suite (docs/token-delivery.md).
+DELIVERY_MODES = ('off', 'usage', 'ids')
 
 
 def digest(value):
@@ -100,9 +104,12 @@ class SSE:
 
 
 class StreamState:
-    def __init__(self):
+    def __init__(self, delivery='off'):
+        if delivery not in DELIVERY_MODES:
+            raise ValueError('unsupported delivery token mode')
         self.events = []; self.parts = []; self.usage = {}; self.finish = None
-        self.done = False; self.total_events = 0
+        self.done = False; self.total_events = 0; self.delivery = delivery
+        self.timeline = None if delivery == 'off' else TokenTimeline(delivery)
 
     def observe(self, raw, elapsed):
         if raw == '[DONE]':
@@ -127,6 +134,9 @@ class StreamState:
             raise ValueError('non-text delta')
         if c.get('finish_reason') is not None:
             self.finish = c['finish_reason']
+        if self.timeline is not None:
+            # Same observation rule as bench.py: every choice-bearing chunk, text or not.
+            self.timeline.observe(c, event.get('usage'), elapsed, bool(content or reasoning))
         ids = c.get('token_ids')
         count = len(ids) if isinstance(ids, list) and all(type(i) is int and i >= 0 for i in ids) else None
         if content or reasoning or count:
@@ -142,6 +152,10 @@ class StreamState:
         usage_valid = all(type(v) is int and v >= 0 for v in (completion, prompt))
         exact = usage_valid and bool(self.events) and all(e['delta_token_count'] is not None for e in self.events)
         exact = bool(exact and sum(e['delta_token_count'] for e in self.events) == completion)
+        delivery = None
+        if self.timeline is not None:
+            delivery = self.timeline.finish(completion if usage_valid else None)
+            exact = delivery['status'] == 'EXACT_COMPLETION_TOKEN_COUNTS'
         return {'events': self.events, 'first_output_s': next((e['seconds'] for e in self.events
                  if e['visible_characters'] or e['reasoning_characters']), None),
                 'first_visible_s': visible[0] if visible else None,
@@ -149,7 +163,8 @@ class StreamState:
                 'longest_visible_delivery_gap_s': max((b-a for a,b in zip(visible,visible[1:])), default=None),
                 'output': output, 'output_sha256': digest(output.encode()),
                 'usage': self.usage, 'usage_valid': usage_valid,
-                'token_timeline_exact': exact, 'finish_reason': self.finish,
+                'token_timeline_exact': exact, 'token_delivery': delivery,
+                'delivery_token_accounting': self.delivery, 'finish_reason': self.finish,
                 'done': self.done, 'total_sse_events': self.total_events}
 
 
@@ -186,11 +201,13 @@ class DeadlineResponse(http.client.HTTPResponse):
 
 
 class Client:
-    def __init__(self, base_url, model, timeout=180, api_key=''):
+    def __init__(self, base_url, model, timeout=180, api_key='', delivery='off'):
         u = urlsplit(base_url.rstrip('/'))
         if u.scheme not in ('http', 'https') or not u.hostname or u.username or u.password or u.query or u.fragment:
             raise ValueError('absolute HTTP(S) base URL, no embedded credentials/query/fragment')
-        self.url = u; self.model = model; self.timeout = timeout; self.key = api_key
+        if delivery not in DELIVERY_MODES:
+            raise ValueError('unsupported delivery token mode')
+        self.url = u; self.model = model; self.timeout = timeout; self.key = api_key; self.delivery = delivery
 
     def stream(self, messages, max_tokens, extra_body):
         u = self.url
@@ -199,10 +216,14 @@ class Client:
         prefix = u.path.rstrip('/').removesuffix('/v1')
         payload = {'model': self.model, 'messages': messages, 'temperature': 0,
                    'max_tokens': max_tokens, 'stream': True, 'stream_options': {'include_usage': True}, **extra_body}
+        if self.delivery == 'usage':
+            payload['stream_options'] = {'include_usage': True, 'continuous_usage_stats': True}
+        elif self.delivery == 'ids':
+            payload['return_token_ids'] = True
         encoded = json.dumps(payload).encode()
         headers = {'Content-Type': 'application/json', 'Accept': 'text/event-stream'}
         if self.key: headers['Authorization'] = 'Bearer ' + self.key
-        started = time.monotonic(); state = StreamState(); parser = SSE(); failure = None
+        started = time.monotonic(); state = StreamState(self.delivery); parser = SSE(); failure = None
         response = None
         conn.response_class = lambda *args, **kwargs: DeadlineResponse(
             *args, deadline=started+self.timeout, **kwargs)
@@ -239,7 +260,7 @@ class Client:
             conn.close()
         row = state.result()
         row.update(started=started, finished=time.monotonic(), error=failure,
-                   request_sha256=digest(encoded))
+                   request_sha256=digest(encoded), sse_bytes=parser.bytes)
         return row
 
 
@@ -340,7 +361,11 @@ def interference(rows):
             before = [t for t in times if t <= start]
             censored = max(0, min(end,r['finished_s']) - max(start,times[-1])) if times else None
             counts = None
-            if r.get('token_timeline_exact'):
+            delivery = r.get('token_delivery') or {}
+            if delivery.get('status') == 'EXACT_COMPLETION_TOKEN_COUNTS':
+                counts = sum(n for t, n in zip(delivery['event_seconds'], delivery['event_token_counts'])
+                             if start <= r['started_s'] + t <= end)
+            elif r.get('token_timeline_exact'):
                 counts = sum(e['delta_token_count'] for e in r['events'] if start <= r['started_s']+e['seconds'] <= end)
             incumbents.append({'id': r['id'], 'visible_before_arrival': bool(before),
                 'longest_intersecting_visible_gap_s': max(gaps,default=None),
@@ -380,6 +405,10 @@ def score(rows, slo=None):
             'e2e_s': distribution([r.get('client_e2e_s') for r in attempted]),
             'dispatch_lag_s': distribution([r.get('dispatch_lag_s') for r in attempted]),
             'longest_visible_gap_s': distribution([r.get('longest_visible_delivery_gap_s') for r in attempted]),
+            'token_delivery_exact_requests': sum((r.get('token_delivery') or {}).get('status') ==
+                                                 'EXACT_COMPLETION_TOKEN_COUNTS' for r in attempted),
+            'client_sse_events': sum(r.get('total_sse_events') or 0 for r in attempted),
+            'client_sse_bytes': sum(r.get('sse_bytes') or 0 for r in attempted),
             'slo': slo, 'slo_good_requests': len(passed) if slo else None,
             'slo_goodput_per_s': len(passed)/span if slo and span else None,
             'slo_fraction_all_planned': len(passed)/len(rows) if slo else None,
@@ -409,6 +438,8 @@ def main():
     ap.add_argument('--slo-gap', type=float)
     ap.add_argument('--slo-total', type=float)
     ap.add_argument('--max-dispatch-lag', type=float, default=0.05, help='client validity bound in seconds; never silently throttle arrivals')
+    ap.add_argument('--delivery-tokens', choices=DELIVERY_MODES, default='off',
+                    help='exact completion-token delivery accounting (docs/token-delivery.md); off keeps plain requests')
     ap.add_argument('--run', action='store_true')
     a = ap.parse_args(); raw = a.trace.read_bytes(); trace = validate(json.loads(raw))
     number(a.timeout, 'timeout', 3600)
@@ -428,24 +459,30 @@ def main():
     if not all((a.output,a.base_url,a.model,a.identity,a.run_id)):
         ap.error('--run requires output, base-url, model, identity, run-id')
     identity_raw = a.identity.read_bytes(); identity = json.loads(identity_raw)
-    client = Client(a.base_url,a.model,a.timeout,os.getenv('OPENAI_API_KEY',''))
+    client = Client(a.base_url,a.model,a.timeout,os.getenv('OPENAI_API_KEY',''),a.delivery_tokens)
     a.output.mkdir(parents=True, exist_ok=False)
     (a.output/'trace.json').write_bytes(raw)
     (a.output/'identity.json').write_bytes(identity_raw)
     save(a.output/'manifest.json', {'receipt_version':1, 'protocol':PROTOCOL, 'trace_sha256':digest(raw), 'trace':trace,
         'runner_sha256':digest(Path(__file__).read_bytes()), 'identity':identity, 'identity_sha256':digest(identity_raw),
         'model':a.model,'run_id':a.run_id,'extra_body':extra,'timeout':a.timeout,
-        'max_dispatch_lag_s':a.max_dispatch_lag,
+        'max_dispatch_lag_s':a.max_dispatch_lag, 'delivery_token_accounting':a.delivery_tokens,
         'cache_claim':'No cache flush. Run-isolated prefix is not proof of coldness.', 'slo':slo})
     try:
+        cpu_started = time.process_time()
         rows = execute(trace,client,a.output,a.run_id,extra)
+        client_cpu = time.process_time() - cpu_started
         summary = summarise_run(rows, slo, a.max_dispatch_lag)
         save(a.output/'score.json',summary)
         identity_unchanged = a.identity.read_bytes()==identity_raw
         passed = identity_unchanged and summary['client_schedule_valid'] and all(r['status']=='completed' for r in rows)
         save(a.output/'terminal.json',{'status':'COMPLETED' if passed else 'COMPLETED_WITH_FAILURES_NO_RETRY',
              'identity_file_unchanged':identity_unchanged,'client_schedule_valid':summary['client_schedule_valid'],'identity_scope':'supplied receipt only; owner must verify live runtime',
-             'completed':sum(r['status']=='completed' for r in rows),'planned':len(rows)})
+             'completed':sum(r['status']=='completed' for r in rows),'planned':len(rows),
+             # Whole-process CPU of this client during the run (all threads): an overhead receipt, not a server metric.
+             'client_cpu_seconds':round(client_cpu,6),
+             'client_cpu_us_per_sse_event':(round(1e6*client_cpu/summary['client_sse_events'],3)
+                                            if summary['client_sse_events'] else None)})
         return 0 if passed else 2
     except Exception as e:
         save(a.output/'terminal.json',{'status':'FAILED_NO_RETRY','type':type(e).__name__,'message':str(e)})

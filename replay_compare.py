@@ -57,10 +57,37 @@ def validate_request_timing(row, due):
         raise ValueError('event output length differs')
     usage = row.get('usage', {})
     valid = all(type(usage.get(k)) is int and usage[k] >= 0 for k in ('prompt_tokens','completion_tokens'))
-    exact = bool(valid and events and all(e.get('delta_token_count') is not None for e in events)
-                 and sum(e['delta_token_count'] for e in events) == usage['completion_tokens'])
+    if row.get('token_delivery') is not None:
+        exact = validate_delivery(row['token_delivery'], usage.get('completion_tokens'), valid, finish - start)
+    else:
+        exact = bool(valid and events and all(e.get('delta_token_count') is not None for e in events)
+                     and sum(e['delta_token_count'] for e in events) == usage['completion_tokens'])
     if row.get('usage_valid', False) is not valid or row.get('token_timeline_exact', False) is not exact:
         raise ValueError('usage/timeline validity differs')
+
+
+EXACT = 'EXACT_COMPLETION_TOKEN_COUNTS'
+
+
+def validate_delivery(delivery, completion, usage_valid, duration):
+    """Re-verify a stored token_delivery record: EXACT only when its counts reconcile with final usage."""
+    if not isinstance(delivery, dict) or delivery.get('status') not in (EXACT, 'UNAVAILABLE'):
+        raise ValueError('invalid token delivery record')
+    if delivery['status'] != EXACT:
+        if any(delivery.get(k) is not None for k in ('event_seconds', 'event_token_counts', 'total_tokens')):
+            raise ValueError('unavailable token delivery must not carry counts')
+        return False
+    times, counts = delivery.get('event_seconds'), delivery.get('event_token_counts')
+    if not (usage_valid and isinstance(times, list) and isinstance(counts, list) and len(times) == len(counts)):
+        raise ValueError('invalid exact token delivery')
+    if any(type(n) is not int or n < 0 for n in counts) or sum(counts) != completion or delivery.get('total_tokens') != completion:
+        raise ValueError('token delivery does not reconcile with usage')
+    previous = 0
+    for value in times:
+        if type(value) not in (int, float) or not math.isfinite(value) or value < previous or value > duration + 1e-6:
+            raise ValueError('invalid token delivery clock')
+        previous = value
+    return True
 
 
 def load_run(path):
@@ -137,6 +164,9 @@ def compare(control, candidate):
     for key in ('protocol','receipt_version','trace_sha256','runner_sha256','extra_body','timeout','slo','max_dispatch_lag_s'):
         if manifests[0][key] != manifests[1][key]:
             raise ValueError('incompatible '+key)
+    # Instrumented requests differ on the wire; absent in older manifests means off.
+    if manifests[0].get('delivery_token_accounting', 'off') != manifests[1].get('delivery_token_accounting', 'off'):
+        raise ValueError('incompatible delivery_token_accounting')
     def cell(a,b):
         return {'control':a,'candidate':b,'delta':b-a if a is not None and b is not None else None}
     def table(a,b):

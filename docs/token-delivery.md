@@ -40,3 +40,20 @@ benchmark checkout or any queued campaign.
 
 The comparison gate rejects different delivery-accounting modes even at the same
 source revision; absent settings in older receipts mean `off`.
+
+## Application replay
+
+`rigmark replay --delivery-tokens usage|ids` applies the same accounting to replay requests. It uses the shared
+`token_timeline.TokenTimeline` and the same observation rule as the staggered suite: every choice-bearing chunk,
+text or not, and usage-only frames skipped. The option also sets the request field (`continuous_usage_stats` or
+`return_token_ids`).
+
+Each request receipt gains `token_delivery`, which is EXACT only when the counts reconcile with final usage. Interference
+evidence reads `generated_tokens_delivered_during_wait` from those reconciled counts. The manifest records
+`delivery_token_accounting`. `compare-replay` re-verifies every stored record and refuses runs with different modes.
+Replay runs recorded without a delivery mode keep their token-ID-only behaviour.
+
+Client overhead is recorded, not assumed:
+- `score.json` carries the SSE event and byte totals the client parsed;
+- `terminal.json` carries the client process CPU seconds for the run and the CPU per SSE event.
+Compare them between modes before comparing instrumented timing with uninstrumented timing.
