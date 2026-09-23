@@ -209,12 +209,25 @@ class Client:
         return row
 
 
+def request_outcome(row, turn):
+    checks = all(t in row.get('output', '') for t in turn.get('contains_all', []))
+    if row.get('error') or not row.get('done'):
+        status = 'error'
+    elif row.get('finish_reason') == 'length':
+        status = 'truncated'
+    elif row.get('finish_reason') != 'stop' or not row.get('output', '').strip() or not checks:
+        status = 'invalid_answer'
+    else:
+        status = 'completed'
+    return status, checks
+
+
 def execute(trace, client, output, run_id, extra_body=None):
     """One thread/session, no concurrency semaphore or all-first-token barrier."""
     validate(trace); extra_body = extra_body or {}
     if set(extra_body) - {'chat_template_kwargs'}:
         raise ValueError('only chat_template_kwargs accepted as extra body')
-    results = []; lock = threading.Lock(); ready = threading.Barrier(len(trace['sessions']) + 1)
+    results = []; write_errors = []; lock = threading.Lock(); ready = threading.Barrier(len(trace['sessions']) + 1)
     epoch_box = []
     def session(s):
         ready.wait(); epoch = epoch_box[0]
@@ -245,26 +258,25 @@ def execute(trace, client, output, run_id, extra_body=None):
                 row['client_e2e_s'] = previous_end - due
                 row['user_visible_ttft_s'] = (row['dispatch_lag_s'] + row['first_visible_s']
                                               if row.get('first_visible_s') is not None else None)
-                checks = all(t in row.get('output', '') for t in turn.get('contains_all', []))
+                status, checks = request_outcome(row, turn)
                 row['declared_content_checks_pass'] = checks
-                if row.get('error') or not row.get('done'):
-                    status = 'error'
-                elif row.get('finish_reason') == 'length':
-                    status = 'truncated'
-                elif row.get('finish_reason') != 'stop' or not row.get('output', '').strip() or not checks:
-                    status = 'invalid_answer'
-                else: status = 'completed'
                 row['status'] = status
                 failed = status != 'completed'
                 history.append({'role': 'assistant', 'content': row.get('output', '')})
             with lock:
+                try:
+                    save(output / f"request-{len(results)+1:04d}.json", row)
+                except Exception as error:
+                    write_errors.append(error)
+                    return
                 results.append(row)
-                save(output / f"request-{len(results):04d}.json", row)
     threads = [threading.Thread(target=session, args=(s,), daemon=False) for s in trace['sessions']]
     for t in threads: t.start()
     epoch_box.append(time.monotonic() + 0.1)
     ready.wait()
     for t in threads: t.join()
+    if write_errors:
+        raise RuntimeError('request receipt write failed') from write_errors[0]
     if len(results) != sum(len(s['turns']) for s in trace['sessions']):
         raise RuntimeError('missing request receipts')
     return sorted(results, key=lambda r: (r['session'], r['turn']))
@@ -292,8 +304,7 @@ def interference(rows):
             times = [r['started_s']+e['seconds'] for e in r.get('events',[]) if e['visible_characters']]
             gaps = [b-a for a,b in zip(times,times[1:]) if a < end and b > start]
             before = [t for t in times if t <= start]
-            after = [t for t in times if t > start]
-            censored = max(0, min(end,r['finished_s']) - max(start,before[-1])) if before and not after else None
+            censored = max(0, min(end,r['finished_s']) - max(start,times[-1])) if times else None
             counts = None
             if r.get('token_timeline_exact'):
                 counts = sum(e['delta_token_count'] for e in r['events'] if start <= r['started_s']+e['seconds'] <= end)

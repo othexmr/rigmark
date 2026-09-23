@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from replay import PROTOCOL, digest, validate, summarise_run
+from replay import PROTOCOL, digest, validate, summarise_run, request_outcome
 
 
 def load_run(path):
@@ -40,12 +40,33 @@ def load_run(path):
         seen.add(key)
         if r['id'] != f"{key[0]}:{key[1]}":
             raise ValueError('request identity differs')
+    by_request = {(r['session'], r['turn']): r for r in rows}
+    for session in trace['sessions']:
+        failed = False
+        for i, turn in enumerate(session['turns']):
+            row = by_request[(session['id'], i)]
+            if failed:
+                if row['status'] != 'blocked_by_previous_turn' or 'started_s' in row:
+                    raise ValueError('dependent request status differs')
+            else:
+                expected_status, checks = request_outcome(row, turn)
+                if row['status'] != expected_status or row.get('declared_content_checks_pass') is not checks:
+                    raise ValueError('request status differs from raw output')
+                if 'output' in row and digest(row['output'].encode()) != row.get('output_sha256'):
+                    raise ValueError('request output hash differs')
+                failed = expected_status != 'completed'
     rows.sort(key=lambda r: (r['session'], r['turn']))
     score = summarise_run(rows, manifest['slo'], manifest['max_dispatch_lag_s'])
     if score != json.loads((path/'score.json').read_text()):
         raise ValueError('score differs from raw request receipts')
     if terminal.get('planned') != len(rows) or terminal.get('completed') != sum(r['status']=='completed' for r in rows):
         raise ValueError('terminal counts differ')
+    expected_status = ('COMPLETED' if score['client_schedule_valid'] and
+                       all(r['status'] == 'completed' for r in rows)
+                       else 'COMPLETED_WITH_FAILURES_NO_RETRY')
+    if (terminal['status'] != expected_status or
+            terminal.get('client_schedule_valid') is not score['client_schedule_valid']):
+        raise ValueError('terminal status/validity differs from request receipts')
     if not score['client_schedule_valid']:
         raise ValueError('client failed intended arrival schedule')
     return manifest, score

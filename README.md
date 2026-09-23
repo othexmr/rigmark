@@ -74,7 +74,7 @@ attestation. A linked Git commit or release supplies the public anchor.
 Python 3.10 or newer is required; there are no third-party packages.
 
 ```bash
-git clone https://github.com/alexellis/rigmark
+git clone --branch feat/serving-interference-and-replay https://github.com/othexmr/rigmark
 cd rigmark
 ./rigmark configure
 

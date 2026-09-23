@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import replay as R
 import replay_prepare as P
 import replay_compare as C
@@ -43,6 +44,14 @@ class FakeClient:
 
 
 class Validation(unittest.TestCase):
+    def test_final_turn_receipt_write_failure_fails_execution(self):
+        with tempfile.TemporaryDirectory() as d:
+            output = Path(d)
+            with patch.object(R, 'save', side_effect=OSError('disk full')):
+                with self.assertRaisesRegex(RuntimeError, 'receipt write failed'):
+                    R.execute(trace(), FakeClient(), output, 'write-failure')
+            self.assertEqual(list(output.glob('request-*.json')), [])
+
     def test_bad_arrival_and_caps(self):
         for v in (-1,float('nan'),True):
             t=trace();t['sessions'][0]['start_s']=v
@@ -151,6 +160,14 @@ class Scores(unittest.TestCase):
         r=R.interference([inc,arrival])[1]['incumbents'][0]
         self.assertEqual(r['longest_intersecting_visible_gap_s'],6)
         self.assertIsNone(r['generated_tokens_delivered_during_wait'])
+    def test_terminal_silence_after_an_in_window_delivery(self):
+        inc = {'id': 'inc', 'started_s': 0., 'finished_s': 7., 'first_output_s': 0.,
+               'events': [{'seconds': t, 'visible_characters': 1} for t in (0., 2.)]}
+        arrival = {'id': 'new', 'started_s': 1., 'finished_s': 8., 'first_output_s': 5., 'events': []}
+        evidence = R.interference([inc, arrival])[-1]['incumbents'][0]
+        self.assertEqual(evidence['longest_intersecting_visible_gap_s'], 2.)
+        self.assertEqual(evidence['right_censored_silence_in_window_s'], 4.)
+
     def test_censored_stall_and_queue_label(self):
         inc={'id':'inc','started_s':0,'finished_s':10,'first_output_s':.1,
              'events':[{'seconds':.1,'visible_characters':1,'delta_token_count':None}]}
@@ -220,8 +237,27 @@ class CompareAndCLI(unittest.TestCase):
                 result=C.compare(root/'control',root/'candidate')
                 self.assertEqual(result['overall']['completion_fraction']['candidate'],1)
                 self.assertEqual(result['overall']['status_counts']['control'],{'completed':3})
+                terminal_path = root/'candidate/terminal.json'
+                terminal_bytes = terminal_path.read_bytes()
+                for change in ({'status': 'COMPLETED_WITH_FAILURES_NO_RETRY'}, {'client_schedule_valid': False}):
+                    terminal = json.loads(terminal_bytes); terminal.update(change)
+                    R.save(terminal_path, terminal)
+                    with self.assertRaisesRegex(ValueError, 'terminal status/validity'):
+                        C.compare(root/'control', root/'candidate')
+                terminal_path.write_bytes(terminal_bytes)
                 request = next((root/'candidate').glob('request-*.json'))
                 saved = request.read_bytes()
+                for change in ({'output': ''}, {'finish_reason': 'length'}, {'done': False}):
+                    bad = json.loads(saved); bad.update(change)
+                    R.save(request, bad)
+                    with self.assertRaisesRegex(ValueError, 'request status differs'):
+                        C.compare(root/'control', root/'candidate')
+                request.write_bytes(saved)
+                bad = json.loads(saved); bad['output'] = 'different completed answer'
+                R.save(request, bad)
+                with self.assertRaisesRegex(ValueError, 'output hash differs'):
+                    C.compare(root/'control', root/'candidate')
+                request.write_bytes(saved)
                 bad = json.loads(saved); bad['client_e2e_s'] = 999.
                 R.save(request, bad)
                 with self.assertRaisesRegex(ValueError, 'score differs'):

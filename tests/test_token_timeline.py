@@ -77,4 +77,3 @@ class ComparisonTests(unittest.TestCase):
             self.assertNotIn(key,compare.comparable(source,source))
 
 if __name__=='__main__':unittest.main()
-
