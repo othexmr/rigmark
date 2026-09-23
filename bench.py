@@ -23,11 +23,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+from token_timeline import TokenTimeline, window_tokens
+
 PROTOCOL_VERSION = "1.1.0"
 HERE = Path(__file__).resolve().parent
 SOURCE_FILES = (
     "audit_code.py",
     "bench.py",
+    "token_timeline.py",
     "compare.py",
     "configure.py",
     "prompts.json",
@@ -94,10 +97,11 @@ def chunk_timed_decode_rate(
 
 
 class Client:
-    def __init__(self, base_url: str, api_key: str, timeout: float):
+    def __init__(self, base_url: str, api_key: str, timeout: float, delivery_tokens: str = "off"):
         self.base_url = validate_base_url(base_url)
         self.api_key = api_key
         self.timeout = timeout
+        self.delivery_tokens = delivery_tokens
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -131,6 +135,18 @@ class Client:
         ``on_first_output`` is called once, when the first measurable output
         arrives; it must not raise.
         """
+        token_timeline = None
+        if record_events and self.delivery_tokens != "off":
+            token_timeline = TokenTimeline(self.delivery_tokens)
+            payload = dict(payload)
+            if payload.get("echo"):
+                raise ValueError("delivery-token accounting does not support prompt echo")
+            payload["stream_options"] = dict(payload.get("stream_options") or {})
+            payload["stream_options"]["include_usage"] = True
+            if self.delivery_tokens == "usage":
+                payload["stream_options"]["continuous_usage_stats"] = True
+            else:
+                payload["return_token_ids"] = True
         request = urllib.request.Request(
             self.base_url + path,
             data=json.dumps(payload).encode(),
@@ -186,8 +202,10 @@ class Client:
                 if not content and isinstance(choice.get("text"), str):
                     content = choice["text"]
                 measured = reasoning + content
+                now = time.monotonic() if measured or token_timeline is not None else None
+                if token_timeline is not None:
+                    token_timeline.observe(choice, event.get("usage"), round(now - started, 6), bool(measured))
                 if measured:
-                    now = time.monotonic()
                     if first is None:
                         first = now
                         if on_first_output is not None:
@@ -233,6 +251,8 @@ class Client:
                 "finished_monotonic_seconds": round(finished, 6),
                 "event_seconds": event_seconds,
             }
+        if token_timeline is not None:
+            timeline["token_delivery"] = token_timeline.finish(completion)
         return {
             **timeline,
             "prompt_tokens": prompt,
@@ -736,6 +756,7 @@ def stall_analysis(
             window.append(gap)
     return {
         "events": len(instants),
+        "arrival_window_completion_tokens": window_tokens(row, window_start, window_end),
         "median_gap_seconds": round(statistics.median(gaps), 6) if gaps else 0.0,
         "p95_gap_seconds": round(percentile(gaps, 0.95), 6) if gaps else 0.0,
         "max_gap_seconds": round(max(gaps), 6) if gaps else 0.0,
@@ -1174,6 +1195,8 @@ def main() -> None:
         help="seconds between every incumbent's first output (decode-first) or the long "
         "request's start (prefill-first) and the arrival",
     )
+    parser.add_argument("--delivery-tokens", choices=("off", "usage", "ids"), default="off",
+                        help="Opt-in exact staggered token timeline; usage needs per-chunk cumulative stats; IDs may add prompt metadata traffic")
     parser.add_argument("--staggered-workload", choices=("code", "prose"), default="code")
     parser.add_argument("--extra-body", default="{}", help="JSON merged into every chat request")
     parser.add_argument("--skip-prefill", action="store_true")
@@ -1209,7 +1232,7 @@ def main() -> None:
         parser.error("--extra-body must be a JSON object")
 
     api_key = os.environ.get(args.api_key_env, "")
-    client = Client(base_url, api_key, args.timeout)
+    client = Client(base_url, api_key, args.timeout, args.delivery_tokens)
     prompts, prompts_sha256 = load_prompts(HERE / "prompts.json")
     model = args.model
     if model == "auto":
@@ -1258,6 +1281,7 @@ def main() -> None:
             "staggered_arrival_tokens": args.staggered_arrival_tokens,
             "staggered_delay_seconds": args.staggered_delay,
             "staggered_workload": args.staggered_workload,
+            "delivery_token_accounting": args.delivery_tokens,
         },
     }
 

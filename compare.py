@@ -98,6 +98,14 @@ def comparable(left: dict[str, Any], right: dict[str, Any]) -> list[str]:
         or left_value != right_value
     ):
         mismatches.append(".".join(path))
+    # Older receipts predate optional delivery accounting and mean off.
+    modes = []
+    for receipt in (left, right):
+        settings = receipt.get("settings")
+        modes.append(settings.get("delivery_token_accounting", "off")
+                     if isinstance(settings, dict) else "off")
+    if any(mode not in ("off", "usage", "ids") for mode in modes) or modes[0] != modes[1]:
+        mismatches.append("settings.delivery_token_accounting")
     return mismatches
 
 
