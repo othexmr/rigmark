@@ -60,7 +60,15 @@ Delivery gaps are client-visible event gaps, not GPU steps or token inter-arriva
 times. Missing token timelines stay unknown; SSE chunks are never counted as
 tokens. Sample p95/p99 need at least 20/100 observations and are not population
 confidence bounds. Review individual requests and achieved overlap, not only
-aggregate scores. No semantic output quality panel is supplied.
+aggregate scores.
+
+`examples/replay/quality-16.json` is a small **quality sanity set**, not an accuracy benchmark. It has 16
+deterministic-answer tasks (arithmetic, code tracing, conversions, counting), each checked for one exact
+`ANSWER: <value>` line; the answers were re-derived programmatically. `score.json` reports
+`content_checks_pass_fraction` over every planned request that declares checks, counting blocked and failed
+requests as misses. Its purpose is to catch gross output breakage between matched runs, for example a numerics or
+synchronisation bug that still produces fluent text. A failed check marks the request `invalid_answer`, so the run
+exits with status 2 (`COMPLETED_WITH_FAILURES_NO_RETRY`); that is expected for a sanity set.
 
 `run-isolated` adds a shared namespace per run. This reduces accidental reuse
 between runs but is not proof of coldness. `natural` preserves shared prefixes.

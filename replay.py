@@ -293,7 +293,8 @@ def execute(trace, client, output, run_id, extra_body=None):
         previous_end = None; failed = False
         for index, turn in enumerate(s['turns']):
             row = {'id': f"{s['id']}:{index}", 'session': s['id'], 'turn': index,
-                   'category': s['category'], 'max_tokens': turn['max_tokens']}
+                   'category': s['category'], 'max_tokens': turn['max_tokens'],
+                   'declared_content_checks': len(turn.get('contains_all', []))}
             if failed:
                 row.update(status='blocked_by_previous_turn', error={'type': 'DependencyFailure'})
             else:
@@ -405,6 +406,13 @@ def score(rows, slo=None):
             'e2e_s': distribution([r.get('client_e2e_s') for r in attempted]),
             'dispatch_lag_s': distribution([r.get('dispatch_lag_s') for r in attempted]),
             'longest_visible_gap_s': distribution([r.get('longest_visible_delivery_gap_s') for r in attempted]),
+            # Declared content checks (e.g. the quality sanity set): every planned request that declares checks is
+            # in the denominator; blocked or failed requests count as misses.
+            'content_checks_declared_requests': sum(bool(r.get('declared_content_checks')) for r in rows),
+            'content_checks_pass_fraction': (sum(r.get('declared_content_checks_pass') is True for r in rows
+                                                 if r.get('declared_content_checks')) /
+                                             sum(bool(r.get('declared_content_checks')) for r in rows)
+                                             if any(r.get('declared_content_checks') for r in rows) else None),
             'token_delivery_exact_requests': sum((r.get('token_delivery') or {}).get('status') ==
                                                  'EXACT_COMPLETION_TOKEN_COUNTS' for r in attempted),
             'client_sse_events': sum(r.get('total_sse_events') or 0 for r in attempted),

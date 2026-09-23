@@ -128,6 +128,8 @@ def load_run(path):
         failed = False
         for i, turn in enumerate(session['turns']):
             row = by_request[(session['id'], i)]
+            if row.get('declared_content_checks') != len(turn.get('contains_all', [])):
+                raise ValueError('declared check count differs from the trace')
             if failed:
                 if row['status'] != 'blocked_by_previous_turn' or 'started_s' in row:
                     raise ValueError('dependent request status differs')
