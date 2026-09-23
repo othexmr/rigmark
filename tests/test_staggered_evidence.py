@@ -2,6 +2,8 @@
 import copy
 import hashlib
 import unittest
+import threading
+import time
 from unittest.mock import patch
 
 import bench
@@ -87,6 +89,40 @@ class Evidence(unittest.TestCase):
                 result=copy.deepcopy(pristine);mutate(result);errors=[]
                 receipt.check_staggered(errors,settings,result,False)
                 self.assertTrue(errors)
+
+    def test_prefill_first_short_starts_before_long_is_invalid_but_readable(self):
+        short_done = threading.Event()
+        long_started = threading.Event()
+        class Client:
+            calls = 0
+            timeout = 2
+            def stream(self, path, payload, **kwargs):
+                if path == '/v1/completions':
+                    time.sleep(.02)  # Simulate worker startup before the request clock.
+                    long_started.set()
+                    kwargs['on_request_start'](time.monotonic())
+                    if not short_done.wait(2):
+                        raise RuntimeError('short request did not run')
+                    return stream(10., [3., 3.2])
+                self.calls += 1
+                if self.calls == 1:
+                    return stream(0., [.1, .2])
+                if not long_started.is_set():
+                    raise RuntimeError('short arrived before long request started')
+                short_done.set()
+                return stream(9., [.1, .2])
+        settings, result = fixture()
+        settings.update(staggered_workload='code', staggered_delay_seconds=0,
+                        staggered_arrival_tokens=64, staggered_incumbent_tokens=64)
+        prompts = {'system': 'test', 'workloads': {'code': 'test'}, 'prefill_unit': 'test'}
+        with patch.object(bench, 'exact_token_ids', return_value=list(range(8))):
+            row = bench.staggered_prefill_first_round(Client(), 'model', prompts, 2, 1,
+                                                       settings, 0, {}, 'test', .1)
+        self.assertFalse(row['overlap_valid'])
+        self.assertEqual(row['newcomers_started_during_prefill'], 0)
+        result['staggered']['2']['prefill_first'] = bench.summarise_valid_rounds([row], bench.PREFILL_FIRST_KEYS)
+        errors = []; receipt.check_staggered(errors, settings, result, False)
+        self.assertEqual(errors, [])
 
     def test_staggered_context_reserves_actual_generation(self):
         bench.validate_prefill_depths([32768],33792,1024)

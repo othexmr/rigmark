@@ -2,9 +2,65 @@
 """Compare two application replays without merging them into RigMark v1 cells."""
 import argparse
 import json
+import math
 from pathlib import Path
 
 from replay import PROTOCOL, digest, validate, summarise_run, request_outcome
+
+
+def validate_request_timing(row, due):
+    """Check persisted scalar timing against the trace clock and raw events."""
+    def finite(value):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError('non-finite request timing')
+        return value
+
+    def equal(key, expected):
+        actual = row.get(key)
+        if expected is None:
+            if actual is not None:
+                raise ValueError('request timing differs: ' + key)
+        elif abs(finite(actual) - expected) > 1e-6:
+            raise ValueError('request timing differs: ' + key)
+
+    start, finish = finite(row['started_s']), finite(row['finished_s'])
+    if start < 0 or finish < start:
+        raise ValueError('invalid request clock order')
+    equal('due_s', due)
+    lag = max(0, start - due)
+    equal('dispatch_lag_s', lag)
+    equal('client_e2e_s', finish - due)
+    events = row.get('events', [])
+    if not isinstance(events, list):
+        raise ValueError('invalid event timeline')
+    previous = 0
+    for event in events:
+        time = finite(event['seconds'])
+        if time < previous or time > finish - start + 1e-6:
+            raise ValueError('invalid event clock order/bounds')
+        previous = time
+        for key in ('visible_characters', 'reasoning_characters'):
+            if type(event.get(key)) is not int or event[key] < 0:
+                raise ValueError('invalid event character count')
+        count = event.get('delta_token_count')
+        if count is not None and (type(count) is not int or count < 0):
+            raise ValueError('invalid event token count')
+    visible = [e['seconds'] for e in events if e['visible_characters']]
+    reasoning = [e['seconds'] for e in events if e['reasoning_characters']]
+    output = [e['seconds'] for e in events if e['visible_characters'] or e['reasoning_characters']]
+    equal('first_visible_s', visible[0] if visible else None)
+    equal('first_reasoning_s', reasoning[0] if reasoning else None)
+    equal('first_output_s', output[0] if output else None)
+    equal('user_visible_ttft_s', lag + visible[0] if visible else None)
+    equal('longest_visible_delivery_gap_s', max((b-a for a,b in zip(visible,visible[1:])), default=None))
+    if 'output' in row and sum(e['visible_characters'] for e in events) != len(row['output']):
+        raise ValueError('event output length differs')
+    usage = row.get('usage', {})
+    valid = all(type(usage.get(k)) is int and usage[k] >= 0 for k in ('prompt_tokens','completion_tokens'))
+    exact = bool(valid and events and all(e.get('delta_token_count') is not None for e in events)
+                 and sum(e['delta_token_count'] for e in events) == usage['completion_tokens'])
+    if row.get('usage_valid', False) is not valid or row.get('token_timeline_exact', False) is not exact:
+        raise ValueError('usage/timeline validity differs')
 
 
 def load_run(path):
@@ -54,6 +110,9 @@ def load_run(path):
                     raise ValueError('request status differs from raw output')
                 if 'output' in row and digest(row['output'].encode()) != row.get('output_sha256'):
                     raise ValueError('request output hash differs')
+                due = (session['start_s'] if i == 0 else
+                       by_request[(session['id'], i-1)]['finished_s'] + turn.get('think_s', 0))
+                validate_request_timing(row, due)
                 failed = expected_status != 'completed'
     rows.sort(key=lambda r: (r['session'], r['turn']))
     score = summarise_run(rows, manifest['slo'], manifest['max_dispatch_lag_s'])

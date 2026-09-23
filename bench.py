@@ -130,6 +130,7 @@ class Client:
         payload: dict[str, Any],
         record_events: bool = False,
         on_first_output: Callable[[], None] | None = None,
+        on_request_start: Callable[[float], None] | None = None,
     ) -> dict[str, Any]:
         """Open one streaming request and time it.
 
@@ -138,7 +139,8 @@ class Client:
         absolute monotonic start/first-output/finish instants, which the
         staggered-arrival suite needs to relate streams to each other.
         ``on_first_output`` is called once, when the first measurable output
-        arrives; it must not raise.
+        arrives; it must not raise. ``on_request_start`` receives the measured
+        monotonic start before opening the request, and must not raise.
         """
         token_timeline = None
         if record_events and self.delivery_tokens != "off":
@@ -158,6 +160,8 @@ class Client:
             headers=self._headers(),
         )
         started = time.monotonic()
+        if on_request_start is not None:
+            on_request_start(started)
         first = None
         first_visible = None
         last = None
@@ -936,12 +940,18 @@ def staggered_prefill_first_round(
     )
 
     first_event = threading.Event()
+    started_event = threading.Event()
+    long_started: list[float] = []
+
+    def record_start(at: float) -> None:
+        long_started.append(at)
+        started_event.set()
 
     def incumbent() -> dict[str, Any]:
         return client.stream(
             "/v1/completions",
             completion_payload(model, long_tokens, settings["staggered_incumbent_tokens"], seed),
-            record_events=True, on_first_output=first_event.set,
+            record_events=True, on_first_output=first_event.set, on_request_start=record_start,
         )
 
     def newcomer(index: int) -> dict[str, Any]:
@@ -961,7 +971,8 @@ def staggered_prefill_first_round(
     barrier = threading.Barrier(newcomers)
     with ThreadPoolExecutor(max_workers=level) as executor:
         long_future = executor.submit(incumbent)
-        time.sleep(delay)
+        wait_for_events([started_event], [long_future], client.timeout)
+        time.sleep(max(0, long_started[0] + delay - time.monotonic()))
         arrived_during_prefill = not first_event.is_set() and not long_future.done()
         newcomer_rows: list[dict[str, Any]] = []
         if arrived_during_prefill:
@@ -973,13 +984,13 @@ def staggered_prefill_first_round(
         raise RuntimeError("staggered long prompt token count does not match depth")
     long_first = long_row["first_output_monotonic_seconds"]
     overlap_valid = bool(newcomer_rows) and all(
-        row["started_monotonic_seconds"] < long_first for row in newcomer_rows
+        long_row["started_monotonic_seconds"] <= row["started_monotonic_seconds"] < long_first for row in newcomer_rows
     )
     result: dict[str, Any] = {
         "round": round_index,
         "overlap_valid": overlap_valid,
         "newcomers_started_during_prefill": sum(
-            row["started_monotonic_seconds"] < long_first for row in newcomer_rows
+            long_row["started_monotonic_seconds"] <= row["started_monotonic_seconds"] < long_first for row in newcomer_rows
         ),
         "long_ttft_seconds": long_row["ttft_seconds"],
         "long_solo_ttft_seconds": round(long_solo_ttft, 6),

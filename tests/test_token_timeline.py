@@ -45,10 +45,12 @@ class Tests(unittest.TestCase):
             def __enter__(self):return iter([('data: '+json.dumps(c)+'\n').encode() for c in chunks]+[b'data: [DONE]\n'])
             def __exit__(self,*args):pass
         payload={'stream':True,'stream_options':{'include_usage':True}}
-        seen=[]
-        def open_(request,**kwargs):seen.append(json.loads(request.data));return Response()
+        seen=[]; starts=[]
+        def open_(request,**kwargs):
+            self.assertEqual(starts, [10])
+            seen.append(json.loads(request.data));return Response()
         with patch('urllib.request.urlopen',side_effect=open_),patch('time.monotonic',side_effect=[10,10,11,12,13]):
-            row=bench.Client('http://localhost:8000','',10,'usage').stream('/v1/chat/completions',payload,True)
+            row=bench.Client('http://localhost:8000','',10,'usage').stream('/v1/chat/completions',payload,True,on_request_start=starts.append)
         self.assertEqual(row['token_delivery']['total_tokens'],7)
         self.assertEqual(len(row['event_seconds']),2)
         self.assertEqual(row['token_delivery']['event_token_counts'],[0,4,3])

@@ -258,9 +258,19 @@ class CompareAndCLI(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'output hash differs'):
                     C.compare(root/'control', root/'candidate')
                 request.write_bytes(saved)
+                for field, value in (('due_s', -100.), ('dispatch_lag_s', 999.), ('user_visible_ttft_s', 99.)):
+                    bad = json.loads(saved); bad[field] = value
+                    R.save(request, bad)
+                    with self.assertRaisesRegex(ValueError, 'timing differs'):
+                        C.compare(root/'control', root/'candidate')
+                bad = json.loads(saved); bad['events'][0]['seconds'] = 100.
+                R.save(request, bad)
+                with self.assertRaisesRegex(ValueError, 'event clock'):
+                    C.compare(root/'control', root/'candidate')
+                request.write_bytes(saved)
                 bad = json.loads(saved); bad['client_e2e_s'] = 999.
                 R.save(request, bad)
-                with self.assertRaisesRegex(ValueError, 'score differs'):
+                with self.assertRaisesRegex(ValueError, 'timing differs'):
                     C.compare(root/'control', root/'candidate')
                 request.write_bytes(saved)
                 cli = subprocess.run([sys.executable, str(Path(R.__file__).with_name('rigmark')),
