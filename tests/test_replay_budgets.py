@@ -94,8 +94,10 @@ class Examples(unittest.TestCase):
                               committed['cache_policy'])
             self.assertEqual(fresh, committed, direction)
 
-    def test_open_ended_review_names_the_no_bug_outcome(self):
-        # A review task without a way out let GLM-5.3 reason past a 4,096-token budget with no visible answer.
-        (review,) = [q for c, q in P.QUESTIONS if 'concurrency bug' in q]
-        self.assertIn('if you find none, say so', review)
-        self.assertIn('under 300 words', review)
+    def test_no_task_is_an_open_ended_bug_hunt(self):
+        # "Review this code for a cancellation or concurrency bug" let GLM-5.3 reason past a 4,096-token budget with no
+        # visible answer in 31 of 32 first turns, even with a no-bug outcome named. Tasks must converge.
+        for category, question in P.QUESTIONS:
+            self.assertNotIn(' bug', question.lower(), question)
+        (walk,) = [q for c, q in P.QUESTIONS if c == 'code' and 'control flow' in q]
+        self.assertIn('under 300 words', walk)

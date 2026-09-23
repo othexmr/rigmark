@@ -9,10 +9,13 @@ from pathlib import Path
 from replay import PROTOCOL, validate
 
 QUESTIONS = [
-    # Revised 2026-09-23: the original wording had no way out when the code has no such bug, and GLM-5.3 at
-    # reasoning_effort low then reasoned past a 4,096-token budget without a visible answer (4 of 4 such first turns in
-    # one validation run). The task now names the no-bug outcome and bounds the answer.
-    ('code', 'Review this code for a cancellation or concurrency bug. If you find one, describe one concrete failing sequence and the smallest fix; if you find none, say so and name the riskiest code path. Avoid style changes. Keep the answer under 300 words.'),
+    # Replaced 2026-09-23. The first code task used to be an open-ended bug hunt ("Review this code for a cancellation
+    # or concurrency bug"). GLM-5.3 at reasoning_effort low spent a whole 4,096-token budget on reasoning with no
+    # visible answer on it: 4 of 4 first turns in one validation run, and 31 of 32 in the next, even after the wording
+    # named a no-bug outcome and bounded the answer. The descriptive and constructive tasks converged in every case
+    # (66 of 66). An unbounded search measures the model's search, not the server, so the first code task now asks for
+    # a description of the same code.
+    ('code', "Explain this code's control flow for an engineer new to it: the entry point, the main steps in order, and the state each step reads or writes. Keep the answer under 300 words."),
     ('document', 'Summarize the supplied material for an engineer joining the project. Give the main constraint, the evidence behind it and one unresolved question.'),
     ('code', 'Propose three focused regression tests for this implementation. Include inputs and expected outcomes; explain which failure each catches.'),
     ('document', 'Explain the operational trade-offs in the material in plain language. Separate measured findings from assumptions; do not invent numbers.'),
