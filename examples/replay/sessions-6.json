@@ -1,0 +1,167 @@
+{
+  "protocol": "rigmark-application-replay.1",
+  "label": "sessions-6-users",
+  "provenance": {
+    "kind": "authored_application_scenario_not_production_trace",
+    "inputs": [
+      {
+        "name": "queue_example.py",
+        "sha256": "6551565734ab10460da02c8175d811c6cb40d15966c1bc23c16500251ef6b5ed",
+        "bytes": 558
+      },
+      {
+        "name": "service_notes.md",
+        "sha256": "4905de62a643ddb8b8ba2355ff8c185452025fbe2c97bb61ac800dfa1062a223",
+        "bytes": 548
+      },
+      {
+        "name": "queue_example.py",
+        "sha256": "6551565734ab10460da02c8175d811c6cb40d15966c1bc23c16500251ef6b5ed",
+        "bytes": 558
+      },
+      {
+        "name": "service_notes.md",
+        "sha256": "4905de62a643ddb8b8ba2355ff8c185452025fbe2c97bb61ac800dfa1062a223",
+        "bytes": 548
+      }
+    ],
+    "padding": "none",
+    "token_lengths": "measured from server usage, not assumed"
+  },
+  "cache_policy": "run-isolated",
+  "system": "Help an engineer solve the task using only the supplied material. Be precise and concise. Admit missing evidence.",
+  "sessions": [
+    {
+      "id": "user-01",
+      "start_s": 0.0,
+      "category": "code",
+      "turns": [
+        {
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. Describe one concrete failing sequence and the smallest fix. Avoid style changes.",
+          "max_tokens": 1024,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 2.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 3.0
+        }
+      ]
+    },
+    {
+      "id": "user-02",
+      "start_s": 0.35,
+      "category": "document",
+      "turns": [
+        {
+          "user": "File: service_notes.md\n```text\n# Queue service review exercise\n\nClients submit request IDs, may cancel before or after dispatch, and expect one\nterminal outcome per accepted submission. An external worker can finish after\na cancellation. Duplicate IDs are possible after a client reconnects.\n\nThe example queue has no persistence, locking, admission limit or request-ID\nvalidation. These are declared limitations, not measured bottlenecks. Decide\nwhich invariants are needed before claiming that a change improves service.\nThere are no performance measurements in this exercise.\n\n```\n\nTask:\nSummarize the supplied material for an engineer joining the project. Give the main constraint, the evidence behind it and one unresolved question.",
+          "max_tokens": 1024,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 3.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 4.0
+        }
+      ]
+    },
+    {
+      "id": "user-03",
+      "start_s": 1.2,
+      "category": "code",
+      "turns": [
+        {
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nPropose three focused regression tests for this implementation. Include inputs and expected outcomes; explain which failure each catches.",
+          "max_tokens": 1024,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 4.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 5.0
+        }
+      ]
+    },
+    {
+      "id": "user-04",
+      "start_s": 1.25,
+      "category": "document",
+      "turns": [
+        {
+          "user": "File: service_notes.md\n```text\n# Queue service review exercise\n\nClients submit request IDs, may cancel before or after dispatch, and expect one\nterminal outcome per accepted submission. An external worker can finish after\na cancellation. Duplicate IDs are possible after a client reconnects.\n\nThe example queue has no persistence, locking, admission limit or request-ID\nvalidation. These are declared limitations, not measured bottlenecks. Decide\nwhich invariants are needed before claiming that a change improves service.\nThere are no performance measurements in this exercise.\n\n```\n\nTask:\nExplain the operational trade-offs in the material in plain language. Separate measured findings from assumptions; do not invent numbers.",
+          "max_tokens": 1024,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 5.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 6.0
+        }
+      ]
+    },
+    {
+      "id": "user-05",
+      "start_s": 3.0,
+      "category": "code",
+      "turns": [
+        {
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nTask:\nReview this code for a cancellation or concurrency bug. Describe one concrete failing sequence and the smallest fix. Avoid style changes.",
+          "max_tokens": 1024,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 6.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 2.0
+        }
+      ]
+    },
+    {
+      "id": "user-06",
+      "start_s": 4.5,
+      "category": "long-review",
+      "turns": [
+        {
+          "user": "File: queue_example.py\n```text\n\"\"\"Small review exercise: inspect cancellation and duplicate submissions.\"\"\"\nclass Queue:\n    def __init__(self):\n        self.pending = []\n        self.running = {}\n\n    def submit(self, request_id, value):\n        self.pending.append((request_id, value))\n\n    def start(self):\n        request_id, value = self.pending.pop(0)\n        self.running[request_id] = value\n        return request_id, value\n\n    def cancel(self, request_id):\n        self.running.pop(request_id, None)\n\n    def finish(self, request_id):\n        return self.running.pop(request_id)\n\n```\n\nFile: service_notes.md\n```text\n# Queue service review exercise\n\nClients submit request IDs, may cancel before or after dispatch, and expect one\nterminal outcome per accepted submission. An external worker can finish after\na cancellation. Duplicate IDs are possible after a client reconnects.\n\nThe example queue has no persistence, locking, admission limit or request-ID\nvalidation. These are declared limitations, not measured bottlenecks. Decide\nwhich invariants are needed before claiming that a change improves service.\nThere are no performance measurements in this exercise.\n\n```\n\nTask:\nReview the complete material. Identify cross-file correctness risks, cite the relevant file names, then prioritize three actionable fixes. Do not repeat the material.",
+          "max_tokens": 1536,
+          "think_s": 0
+        },
+        {
+          "user": "Now challenge your answer: which claim has the weakest evidence? Revise it and give one next check.",
+          "max_tokens": 768,
+          "think_s": 2.0
+        },
+        {
+          "user": "Turn that into a concise handoff with the next action and its acceptance criteria.",
+          "max_tokens": 768,
+          "think_s": 3.0
+        }
+      ]
+    }
+  ]
+}

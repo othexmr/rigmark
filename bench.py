@@ -39,6 +39,9 @@ SOURCE_FILES = (
     "receipt.py",
     "report.py",
     "rigmark",
+    "replay.py",
+    "replay_prepare.py",
+    "replay_compare.py",
 )
 
 
