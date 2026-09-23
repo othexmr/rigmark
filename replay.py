@@ -146,6 +146,7 @@ class StreamState:
 
     def result(self):
         visible = [e['seconds'] for e in self.events if e['visible_characters']]
+        text = [e['seconds'] for e in self.events if e['visible_characters'] or e['reasoning_characters']]
         output = ''.join(self.parts)
         completion = self.usage.get('completion_tokens')
         prompt = self.usage.get('prompt_tokens')
@@ -161,6 +162,7 @@ class StreamState:
                 'first_visible_s': visible[0] if visible else None,
                 'first_reasoning_s': next((e['seconds'] for e in self.events if e['reasoning_characters']), None),
                 'longest_visible_delivery_gap_s': max((b-a for a,b in zip(visible,visible[1:])), default=None),
+                'longest_output_delivery_gap_s': max((b-a for a,b in zip(text,text[1:])), default=None),
                 'output': output, 'output_sha256': digest(output.encode()),
                 'usage': self.usage, 'usage_valid': usage_valid,
                 'token_timeline_exact': exact, 'token_delivery': delivery,
@@ -314,6 +316,8 @@ def execute(trace, client, output, run_id, extra_body=None):
                 row['client_e2e_s'] = previous_end - due
                 row['user_visible_ttft_s'] = (row['dispatch_lag_s'] + row['first_visible_s']
                                               if row.get('first_visible_s') is not None else None)
+                row['user_output_ttft_s'] = (row['dispatch_lag_s'] + row['first_output_s']
+                                             if row.get('first_output_s') is not None else None)
                 status, checks = request_outcome(row, turn)
                 row['declared_content_checks_pass'] = checks
                 row['status'] = status
@@ -378,6 +382,20 @@ def interference(rows):
     return result
 
 
+# SLO basis: 'visible' times the first answer text and gaps between answer deltas (the original definition);
+# 'output' also counts reasoning deltas, for applications that stream a reasoning model's thinking to the user.
+SLO_BASES = ('visible', 'output')
+SLO_FIELDS = {'visible': ('user_visible_ttft_s', 'longest_visible_delivery_gap_s'),
+              'output': ('user_output_ttft_s', 'longest_output_delivery_gap_s')}
+
+
+def slo_basis(slo):
+    basis = slo.get('basis', 'visible')         # absent in older receipts: visible
+    if basis not in SLO_BASES:
+        raise ValueError('unknown SLO basis')
+    return basis
+
+
 def score(rows, slo=None):
     attempted = [r for r in rows if 'started_s' in r]
     completed = [r for r in rows if r['status'] == 'completed']
@@ -385,9 +403,10 @@ def score(rows, slo=None):
     statuses = {s: sum(r['status']==s for r in rows) for s in sorted({r['status'] for r in rows})}
     passed = []
     if slo:
-        passed = [r for r in completed if r.get('user_visible_ttft_s') is not None
-                  and r['user_visible_ttft_s'] <= slo['visible'] and r['client_e2e_s'] <= slo['total']
-                  and (r.get('longest_visible_delivery_gap_s') or 0) <= slo['gap']]
+        ttft, gap = SLO_FIELDS[slo_basis(slo)]
+        passed = [r for r in completed if r.get(ttft) is not None
+                  and r[ttft] <= slo['visible'] and r['client_e2e_s'] <= slo['total']
+                  and (r.get(gap) or 0) <= slo['gap']]
     token_total = sum(r['usage']['completion_tokens'] for r in attempted if r.get('usage_valid'))
     timeline = sorted([(r['started_s'],1) for r in attempted] + [(r['finished_s'],-1) for r in attempted])
     outstanding = peak = 0
@@ -403,9 +422,11 @@ def score(rows, slo=None):
             'usage_coverage_requests': sum(bool(r.get('usage_valid')) for r in attempted),
             'completion_tokens_per_s': token_total/span if span and attempted and all(r.get('usage_valid') for r in attempted) else None,
             'visible_ttft_s': distribution([r.get('user_visible_ttft_s') for r in attempted]),
+            'output_ttft_s': distribution([r.get('user_output_ttft_s') for r in attempted]),
             'e2e_s': distribution([r.get('client_e2e_s') for r in attempted]),
             'dispatch_lag_s': distribution([r.get('dispatch_lag_s') for r in attempted]),
             'longest_visible_gap_s': distribution([r.get('longest_visible_delivery_gap_s') for r in attempted]),
+            'longest_output_gap_s': distribution([r.get('longest_output_delivery_gap_s') for r in attempted]),
             # Declared content checks (e.g. the quality sanity set): every planned request that declares checks is
             # in the denominator; blocked or failed requests count as misses.
             'content_checks_declared_requests': sum(bool(r.get('declared_content_checks')) for r in rows),
@@ -445,6 +466,8 @@ def main():
     ap.add_argument('--slo-visible', type=float)
     ap.add_argument('--slo-gap', type=float)
     ap.add_argument('--slo-total', type=float)
+    ap.add_argument('--slo-basis', choices=SLO_BASES, default='visible',
+                    help="first-output and gap basis of the SLO: visible answer text only, or any output including reasoning")
     ap.add_argument('--max-dispatch-lag', type=float, default=0.05, help='client validity bound in seconds; never silently throttle arrivals')
     ap.add_argument('--delivery-tokens', choices=DELIVERY_MODES, default='off',
                     help='exact completion-token delivery accounting (docs/token-delivery.md); off keeps plain requests')
@@ -457,10 +480,13 @@ def main():
     if not isinstance(extra, dict) or set(extra) - {'chat_template_kwargs'}: ap.error('only chat_template_kwargs allowed')
     thresholds = (a.slo_visible, a.slo_gap, a.slo_total)
     slo = None
+    if a.slo_basis != 'visible' and any(v is None for v in thresholds):
+        ap.error('--slo-basis needs the three SLO thresholds')
     if any(v is not None for v in thresholds):
         if any(v is None for v in thresholds): ap.error('supply all three SLO thresholds')
         for v in thresholds: number(v, 'SLO')
         slo = dict(zip(('visible','gap','total'),thresholds))
+        if a.slo_basis != 'visible': slo['basis'] = a.slo_basis   # visible receipts stay as before
     if not a.run:
         print(json.dumps({'status':'VALIDATED_NO_REQUESTS', 'trace_sha256':digest(raw),
                           'sessions':len(trace['sessions']), 'turns':sum(len(s['turns']) for s in trace['sessions'])})); return 0

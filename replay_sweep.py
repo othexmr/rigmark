@@ -40,6 +40,7 @@ def summarise(points, target):
                'slo_goodput_per_s': s.get('slo_goodput_per_s'),
                'visible_ttft_median_s': (s.get('visible_ttft_s') or {}).get('median'),
                'visible_ttft_p95_s': (s.get('visible_ttft_s') or {}).get('p95'),
+               'output_ttft_median_s': (s.get('output_ttft_s') or {}).get('median'),
                'e2e_median_s': (s.get('e2e_s') or {}).get('median'),
                'client_schedule_valid': s.get('client_schedule_valid'), 'target_met': met}
         table.append(row)
@@ -75,6 +76,8 @@ def main():
     ap.add_argument('--slo-visible', type=float, required=True)
     ap.add_argument('--slo-gap', type=float, required=True)
     ap.add_argument('--slo-total', type=float, required=True)
+    ap.add_argument('--slo-basis', choices=R.SLO_BASES, default='visible',
+                    help='first-output and gap basis: visible answer text, or any output including reasoning')
     ap.add_argument('--target', type=float, default=0.9, help='SLO attainment target over all planned requests')
     ap.add_argument('--stop-below', type=float, default=0.5, help='stop after a rate whose completion fraction is lower')
     ap.add_argument('--max-dispatch-lag', type=float, default=0.05)
@@ -97,6 +100,8 @@ def main():
     slo = {'visible': a.slo_visible, 'gap': a.slo_gap, 'total': a.slo_total}
     for value in slo.values():
         R.number(value, 'SLO')
+    if a.slo_basis != 'visible':
+        slo['basis'] = a.slo_basis
     a.output.mkdir(parents=True, exist_ok=False)
     identity_raw = a.identity.read_bytes(); identity = json.loads(identity_raw)
     client = R.Client(a.base_url, a.model, a.timeout, os.getenv('OPENAI_API_KEY', ''), a.delivery_tokens)
@@ -120,6 +125,7 @@ def main():
         cpu = time.process_time()
         try:
             rows = R.execute(trace, client, run, f'sweep-{a.seed}-{label}', extra)
+            client_cpu = time.process_time() - cpu
             score = R.summarise_run(rows, slo, a.max_dispatch_lag)
             R.save(run / 'score.json', score)
             unchanged = a.identity.read_bytes() == identity_raw
@@ -129,7 +135,9 @@ def main():
                                            'client_schedule_valid': score['client_schedule_valid'],
                                            'identity_scope': 'supplied receipt only; owner must verify live runtime',
                                            'completed': sum(r['status'] == 'completed' for r in rows), 'planned': len(rows),
-                                           'client_cpu_seconds': round(time.process_time() - cpu, 6)})
+                                           'client_cpu_seconds': round(client_cpu, 6),
+                                           'client_cpu_us_per_sse_event': (round(1e6 * client_cpu / score['client_sse_events'], 3)
+                                                                           if score['client_sse_events'] else None)})
             points.append({'rate': rate, 'score': score, 'status': 'COMPLETED' if passed else 'COMPLETED_WITH_FAILURES_NO_RETRY'})
         except Exception as error:
             R.save(run / 'terminal.json', {'status': 'FAILED_NO_RETRY', 'type': type(error).__name__, 'message': str(error)})

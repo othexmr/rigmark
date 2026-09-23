@@ -70,6 +70,16 @@ mixed modes.
 Optional SLO scoring requires all three second-valued flags:
 `--slo-visible`, `--slo-gap`, `--slo-total`. Goodput includes only completed
 requests meeting every threshold, with all planned requests in the denominator.
+
+`--slo-basis` chooses what the first-output and gap thresholds time.
+- `visible` (the default and the original definition) times answer text only. For a reasoning model, that TTFT
+  includes all of the reasoning time.
+- `output` also counts reasoning deltas: the first output of any kind, and gaps between any two output deltas. Use
+  it for applications that stream the model's reasoning to the user.
+
+The basis is recorded in the manifest's `slo`, and `compare-replay` refuses runs with different bases. `score.json`
+reports both first-output distributions (`visible_ttft_s`, `output_ttft_s`) and both gap distributions whatever the
+basis.
 Delivery gaps are client-visible event gaps, not GPU steps or token inter-arrival
 times. Missing token timelines stay unknown; SSE chunks are never counted as
 tokens. Sample p95/p99 need at least 20/100 observations and are not population

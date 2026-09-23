@@ -53,6 +53,8 @@ def validate_request_timing(row, due):
     equal('first_output_s', output[0] if output else None)
     equal('user_visible_ttft_s', lag + visible[0] if visible else None)
     equal('longest_visible_delivery_gap_s', max((b-a for a,b in zip(visible,visible[1:])), default=None))
+    equal('user_output_ttft_s', lag + output[0] if output else None)
+    equal('longest_output_delivery_gap_s', max((b-a for a,b in zip(output,output[1:])), default=None))
     if 'output' in row and sum(e['visible_characters'] for e in events) != len(row['output']):
         raise ValueError('event output length differs')
     usage = row.get('usage', {})
