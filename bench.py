@@ -271,7 +271,8 @@ class Client:
                 None if first_visible is None else round(first_visible - started, 6)
             ),
             "time_to_last_output_seconds": round(last - started, 6),
-            "decode_seconds": round(decode_window, 6),
+            # Preserve the denominator used for the rate, including very short bursts.
+            "decode_seconds": decode_window,
             "decode_tokens_per_second": round(decode_rate, 3),
             "measured_sse_events": measured_events,
             "wall_seconds": round(finished - started, 6),

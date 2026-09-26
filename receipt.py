@@ -105,6 +105,24 @@ def output_valid(workload: str, row: dict[str, Any]) -> bool:
     )
 
 
+def matches_legacy_decode_rounding(completion: int, window: float, rate: float) -> bool:
+    """Accept only rates compatible with the old writer's rounding intervals.
+
+    Older receipts rounded seconds to six decimals and tokens/s to three,
+    independently. For short bursts that can exceed the normal rate tolerance.
+    Do not apply the legacy duration allowance to higher-precision receipts.
+    """
+    if completion <= 1 or window <= 0 or rate <= 0 or round(window, 6) != window:
+        return False
+    tokens = completion - 1
+    rate_low = max(0.0, rate - 0.0005)
+    rate_high = rate + 0.0005
+    return (
+        tokens / rate_high <= window + 0.0000005
+        and (rate_low == 0 or tokens / rate_low >= window - 0.0000005)
+    )
+
+
 def check_stream_row(
     errors: list[str],
     row: Any,
@@ -153,8 +171,9 @@ def check_stream_row(
             expected_rate = (
                 0.0 if completion <= 1 else round((completion - 1) / window, 3)
             )
-            if not math.isclose(
-                float(rate), expected_rate, rel_tol=0.002, abs_tol=0.01
+            if not (
+                math.isclose(float(rate), expected_rate, rel_tol=0.002, abs_tol=0.01)
+                or matches_legacy_decode_rounding(completion, window, rate)
             ):
                 errors.append(
                     f"{path}.decode_tokens_per_second does not match tokens/time"
